@@ -1,24 +1,165 @@
 import makeWASocket, {
   DisconnectReason,
-  useMultiFileAuthState
+  useMultiFileAuthState,
+  downloadMediaMessage
 } from "@whiskeysockets/baileys";
-
 import axios from "axios";
 import qrcode from "qrcode-terminal";
 import { Boom } from "@hapi/boom";
 import fs from "fs";
 import path from "path";
-import { downloadMediaMessage } from "@whiskeysockets/baileys";
 
+// ================================
+// CONFIGURACIÓN
+// ================================
+const API_BASE_URL = "http://localhost:8000";
+const GROUP_ID = "120363406312544822@g.us";
 
-const API_URL = "http://127.0.0.1:8000/ingest_message";
+// Palabras clave para detección de ventas
+const SALES_KEYWORDS = ["vendo", "venta", "compro", "precio", "promo", "oferta", "negocio", "negociable", "venda", "comprar", "vendiendo"];
+
+// Directorios para medios
+const IMAGE_DIR = path.resolve("./media/temp/images");
+if (!fs.existsSync(IMAGE_DIR)) {
+  fs.mkdirSync(IMAGE_DIR, { recursive: true });
+}
+
+// ================================
+// FUNCIÓN PARA BORRAR MENSAJES
+// ================================
+async function deleteMessageFromGroup(sock, messageKey) {
+    try {
+        console.log(`🗑️ Intentando borrar mensaje...`);
+        console.log(`   Key:`, JSON.stringify(messageKey, null, 2));
+
+        await sock.sendMessage(messageKey.remoteJid, {
+            delete: messageKey
+        });
+
+        console.log(`✅ Mensaje borrado exitosamente`);
+        return true;
+    } catch (error) {
+        console.error(`❌ Error al borrar mensaje: ${error.message}`);
+        return false;
+    }
+}
+
+// ================================
+// FUNCIÓN PARA EXPULSAR USUARIOS
+// ================================
+async function removeUserFromGroup(sock, chatId, userPhone) {
+    try {
+        console.log(`🚫 Intentando expulsar usuario ${userPhone} del grupo ${chatId}`);
+
+        const participantJid = `${userPhone}@s.whatsapp.net`;
+
+        await sock.groupParticipantsUpdate(
+            chatId,
+            [participantJid],
+            "remove"
+        );
+
+        console.log(`✅ Usuario ${userPhone} expulsado exitosamente`);
+        return true;
+    } catch (error) {
+        console.error(`❌ Error al expulsar usuario: ${error.message}`);
+        return false;
+    }
+}
+
+// ================================
+// FUNCIÓN PARA PROCESAR INSTRUCCIONES
+// ================================
+async function processInstructions(instructions, sock) {
+    if (!instructions) {
+        console.log("⚠️ No hay instrucciones para procesar");
+        return;
+    }
+
+    console.log("🔧 Procesando instrucciones:", JSON.stringify(instructions, null, 2));
+
+    // Si es un objeto con una sola instrucción, convertir a array
+    let instructionList = [];
+    if (Array.isArray(instructions)) {
+        instructionList = instructions;
+    } else if (instructions.send_message || instructions.send_image || instructions.delete_message || instructions.remove_user) {
+        instructionList = [instructions];
+    } else {
+        console.log("⚠️ Formato de instrucciones no reconocido");
+        return;
+    }
+
+    console.log(`📋 Total de instrucciones a procesar: ${instructionList.length}`);
+
+    for (const instruction of instructionList) {
+        try {
+            console.log("🔹 Procesando instrucción:", instruction);
+
+            // 1. Enviar mensaje
+            if (instruction.send_message && instruction.to && instruction.text) {
+                let targetChat = instruction.to;
+
+                // Si no tiene @, es un número de teléfono
+                if (!targetChat.includes('@')) {
+                    targetChat = `${targetChat}@s.whatsapp.net`;
+                }
+
+                console.log(`📤 Enviando mensaje a ${targetChat}`);
+                await sock.sendMessage(targetChat, {
+                    text: instruction.text
+                });
+                console.log(`✅ Mensaje enviado a ${targetChat}`);
+            }
+
+            // 2. Enviar imagen
+            if (instruction.send_image && instruction.to && instruction.image_path) {
+                let targetChat = instruction.to;
+                if (!targetChat.includes('@')) {
+                    targetChat = `${targetChat}@s.whatsapp.net`;
+                }
+
+                const imagePath = path.join(IMAGE_DIR, instruction.image_path);
+
+                console.log(`📸 Enviando imagen desde: ${imagePath}`);
+
+                if (fs.existsSync(imagePath)) {
+                    await sock.sendMessage(targetChat, {
+                        image: fs.readFileSync(imagePath),
+                        caption: instruction.caption || ""
+                    });
+                    console.log(`✅ Imagen enviada a ${targetChat}`);
+                } else {
+                    console.error(`❌ Imagen no encontrada: ${imagePath}`);
+                }
+            }
+
+            // 3. Borrar mensaje del grupo
+            if (instruction.delete_message && instruction.message_key) {
+                const messageKey = JSON.parse(instruction.message_key);
+                await deleteMessageFromGroup(sock, messageKey);
+            }
+
+            // 4. Expulsar usuario del grupo
+            if (instruction.remove_user && instruction.chat_id && instruction.user_phone) {
+                await removeUserFromGroup(sock, instruction.chat_id, instruction.user_phone);
+            }
+
+        } catch (error) {
+            console.error("❌ Error procesando instrucción:", error);
+        }
+    }
+}
 
 async function start() {
   const { state, saveCreds } = await useMultiFileAuthState("auth");
 
   const sock = makeWASocket({
     auth: state,
-    printQRInTerminal: false
+    printQRInTerminal: true,
+    connectTimeoutMs: 60000,
+    keepAliveIntervalMs: 25000,
+    emitOwnEvents: true,
+    defaultQueryTimeoutMs: 0,
   });
 
   sock.ev.on("creds.update", saveCreds);
@@ -32,95 +173,223 @@ async function start() {
 
     if (connection === "close") {
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
+      console.log(`Conexión cerrada. Razón: ${reason}`);
+
       if (reason !== DisconnectReason.loggedOut) {
-        start();
+        console.log("Reconectando en 5 segundos...");
+        setTimeout(start, 5000);
       }
     }
 
     if (connection === "open") {
-      console.log("🟢 WhatsApp conectado");
+      console.log("✅ WhatsApp conectado correctamente");
     }
   });
 
-sock.ev.on("messages.upsert", async ({ messages }) => {
-  const msg = messages[0];
-  if (!msg.message) return;
+  // ============================================
+  // MANEJADOR PRINCIPAL DE MENSAJES
+  // ============================================
 
-  const chatId = msg.key.remoteJid;
-  const isGroup = chatId.endsWith("@g.us");
+  sock.ev.on("messages.upsert", async ({ messages }) => {
+    try {
+      const msg = messages[0];
+      if (!msg.message) return;
 
-  const phone =
-    msg.key.participant?.split("@")[0] ||
-    chatId.split("@")[0];
+      // Ignorar mensajes propios
+      if (msg.key.fromMe) {
+        return;
+      }
 
-  let messageType = null;
-  let content = null;
+      const chatId = msg.key.remoteJid;
+      const isGroup = chatId.endsWith("@g.us");
+      const messageType = Object.keys(msg.message)[0];
 
-  // TEXTO
-  if (
-    msg.message.conversation ||
-    msg.message.extendedTextMessage?.text
-  ) {
-    messageType = "text";
-    content =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage.text;
-  }
+      console.log(`\n📨 Nuevo mensaje recibido:`);
+      console.log(`   Chat: ${isGroup ? 'Grupo' : 'Privado'}`);
+      console.log(`   ID: ${chatId}`);
 
-  // IMAGEN
-else if (msg.message.imageMessage) {
-  messageType = "image";
+      // Obtener número del remitente
+      let sender = "";
+      if (isGroup) {
+        sender = msg.key.participant?.split("@")[0] || "";
+      } else {
+        sender = chatId.split("@")[0];
+      }
 
-  const buffer = await downloadMediaMessage(
-    msg,
-    "buffer",
-    {},
-    { logger: undefined }
-  );
+      const pushName = msg.pushName || "Usuario";
 
-  const filename = `img_${Date.now()}_${phone}.jpg`;
-  const filepath = path.join(IMAGE_DIR, filename);
+      // ============================================
+      // 1. MENSAJES EN GRUPO (DETECCIÓN DE VENTAS)
+      // ============================================
+      if (isGroup && chatId === GROUP_ID) {
+        console.log(`   👥 Grupo monitoreado`);
 
-  fs.writeFileSync(filepath, buffer);
+        let messageContent = "";
+        let mediaFilename = null;
 
-  content = filename;
+        // Extraer contenido según tipo
+        if (messageType === "conversation") {
+          messageContent = msg.message.conversation || "";
+        } else if (messageType === "extendedTextMessage") {
+          messageContent = msg.message.extendedTextMessage?.text || "";
+        }
+
+        console.log(`   📝 Contenido: ${messageContent.substring(0, 100)}`);
+
+        // Detectar palabras clave de venta
+        const lowerContent = messageContent.toLowerCase();
+        const hasSalesKeyword = SALES_KEYWORDS.some(keyword =>
+          lowerContent.includes(keyword)
+        );
+
+        console.log(`   🔍 ¿Palabra clave de venta?: ${hasSalesKeyword}`);
+
+        // Si es imagen o tiene palabra clave, procesar
+        if (messageType === "imageMessage" || hasSalesKeyword) {
+          console.log(`🚨 Mensaje sospechoso en grupo de: ${sender}`);
+
+          // Si es imagen, descargarla
+          if (messageType === "imageMessage") {
+            try {
+              const buffer = await downloadMediaMessage(
+                msg,
+                "buffer",
+                {},
+                { logger: undefined, retryCount: 3 }
+              );
+
+              mediaFilename = `img_${Date.now()}_${sender}.jpg`;
+              const filepath = path.join(IMAGE_DIR, mediaFilename);
+              fs.writeFileSync(filepath, buffer);
+
+              console.log(`📸 Imagen guardada: ${mediaFilename}`);
+            } catch (error) {
+              console.error("❌ Error descargando imagen:", error.message);
+            }
+          }
+
+          // Enviar a la API para crear caso
+          try {
+            const payload = {
+              phone: sender,
+              name: pushName,
+              chat_id: chatId,
+              is_group: true,
+              message_type: messageType === "imageMessage" ? "image" : "text",
+              content: messageType === "imageMessage" ? mediaFilename : messageContent,
+              whatsapp_message_key: JSON.stringify(msg.key) // <-- GUARDAR KEY COMPLETA
+            };
+
+            console.log("📤 Enviando a /ingest_message...");
+            const response = await axios.post(`${API_BASE_URL}/ingest_message`, payload, {
+              timeout: 10000
+            });
+            console.log("✅ API respondió:", response.data);
+
+          } catch (error) {
+            console.error("❌ Error enviando a API:", error.message);
+            if (error.response) {
+              console.error("   Detalles:", error.response.data);
+            }
+          }
+        } else {
+          console.log(`   ✅ Mensaje normal, ignorando.`);
+        }
+        return;
+      }
+
+      // ============================================
+      // 2. MENSAJES PRIVADOS
+      // ============================================
+      if (!isGroup) {
+        let messageText = "";
+
+        if (messageType === "conversation") {
+          messageText = msg.message.conversation || "";
+        } else if (messageType === "extendedTextMessage") {
+          messageText = msg.message.extendedTextMessage?.text || "";
+        }
+
+        console.log(`💬 Mensaje privado de ${sender}: ${messageText}`);
+
+        // Si es una respuesta numérica (1, 2, 3), enviar a /moderation/response
+        if (/^[123]$/.test(messageText.trim())) {
+          console.log(`🔢 Respuesta numérica detectada: ${messageText}`);
+          try {
+            const payload = {
+              phone: sender,
+              response: messageText.trim()
+            };
+
+            console.log("📤 Enviando a /moderation/response:", payload);
+            const response = await axios.post(`${API_BASE_URL}/moderation/response`, payload);
+            console.log("✅ Respuesta de /moderation/response:", response.data);
+
+            if (response.data.instructions) {
+              await processInstructions(response.data.instructions, sock);
+            }
+          } catch (error) {
+            console.error("Error en /moderation/response:", error.message);
+          }
+          return;
+        }
+
+        // Si no es numérico, enviar a /conversation
+        try {
+          const payload = {
+            phone: sender,
+            message: messageText,
+            name: pushName
+          };
+
+          console.log("📤 Enviando a /conversation:", payload);
+          const response = await axios.post(`${API_BASE_URL}/conversation`, payload);
+          console.log("✅ Respuesta de /conversation:", response.data);
+
+          if (response.data.instructions) {
+            await processInstructions(response.data.instructions, sock);
+          }
+        } catch (error) {
+          console.error("Error en /conversation:", error.message);
+        }
+        return;
+      }
+
+      // ============================================
+      // 3. OTROS GRUPOS (IGNORAR)
+      // ============================================
+      if (isGroup && chatId !== GROUP_ID) {
+        console.log(`   👥 Grupo no monitoreado, ignorando`);
+        return;
+      }
+
+    } catch (error) {
+      console.error("❌ Error general en el manejador de mensajes:", error);
+    }
+  });
 }
 
-
-  // AUDIO / VIDEO → ignorar completamente
-  else if (
-    msg.message.audioMessage ||
-    msg.message.videoMessage
-  ) {
-    return;
-  }
-
-  // Nada relevante
-  if (!messageType) return;
-
-  const payload = {
-    phone,
-    name: msg.pushName || null,
-    chat_id: chatId,
-    is_group: isGroup,
-    message_type: messageType,
-    content
-  };
-
-  try {
-    const res = await axios.post(API_URL, payload);
-    console.log("➡️ enviado a moderador:", res.data);
-  } catch (err) {
-    console.error("❌ error API:", err.message);
-  }
+// ============================================
+// MANEJAR ERRORES GLOBALES
+// ============================================
+process.on('uncaughtException', (error) => {
+  console.error('❌ Error no capturado:', error);
 });
-}
 
-const IMAGE_DIR = path.resolve("../media/temp/images");
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Promesa rechazada no manejada:', reason);
+});
 
-if (!fs.existsSync(IMAGE_DIR)) {
-  fs.mkdirSync(IMAGE_DIR, { recursive: true });
-}
+process.on('SIGINT', () => {
+  console.log('\n🛑 Recibida señal de interrupción, cerrando...');
+  process.exit(0);
+});
 
+// Iniciar el bot
+console.log("🚀 Iniciando bot moderador de WhatsApp...");
+console.log(`🌐 API: ${API_BASE_URL}`);
+console.log(`👥 Grupo monitoreado: ${GROUP_ID}`);
+console.log("📸 Directorio de imágenes:", IMAGE_DIR);
+console.log("==========================================");
 
 start();

@@ -12,7 +12,7 @@ class Case(Base):
 
     # Tipo de caso
     type = Column(String)
-    # infringement | gossip | appeal | report
+    # infringement | image_review | appeal | report
 
     status = Column(String, default="pending")
     # pending | in_review | resolved | archived
@@ -24,10 +24,14 @@ class Case(Base):
     message = relationship("Message")
 
     # Moderador asignado (opcional)
-    assigned_to = Column(Integer, ForeignKey("users.id"), nullable=True)
-    moderator = relationship("User", foreign_keys=[assigned_to])
+    assigned_to = Column(String, nullable=True)  # 🔧 cambiado a String para phone
+
+    # Resolución
+    resolution = Column(String, nullable=True)  # 🔧 AGREGADO
+    resolved_by = Column(String, nullable=True)  # 🔧 AGREGADO
+    resolved_at = Column(DateTime(timezone=True), nullable=True)  # 🔧 AGREGADO
 
     # Info extra
-    notes = Column(String, nullable=True)
+    note = Column(String, nullable=True)  # 🔧 cambiado de 'notes' a 'note'
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())

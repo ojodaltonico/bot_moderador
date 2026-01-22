@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Boolean, Text
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
@@ -15,21 +15,21 @@ class Message(Base):
     user = relationship("User")
 
     # Contexto
-    chat_id = Column(String, index=True)  # id del grupo o privado
+    chat_id = Column(String, index=True)
     is_group = Column(Boolean, default=True)
 
     # Contenido
-    message_type = Column(String)  # text | image | audio | video | sticker
-    content = Column(String, nullable=True)  # texto o caption
-    media_path = Column(String, nullable=True)  # opcional, si se guarda
+    message_type = Column(String)
+    content = Column(String, nullable=True)
 
-    # Metadatos
-    is_deleted = Column(Boolean, default=False)
-    flagged = Column(Boolean, default=False)  # marcado como sospechoso
+    # WhatsApp message key (completa, en JSON)
+    whatsapp_message_key = Column(Text, nullable=True)  # <-- CAMBIO AQUÍ
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
+    # Media
     media_filename = Column(String, nullable=True)
 
+    # Metadatos
     flagged = Column(Boolean, default=False)
     deleted = Column(Boolean, default=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
