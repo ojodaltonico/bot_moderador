@@ -28,3 +28,8 @@ class Message(Base):
     flagged = Column(Boolean, default=False)  # marcado como sospechoso
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    media_filename = Column(String, nullable=True)
+
+    flagged = Column(Boolean, default=False)
+    deleted = Column(Boolean, default=False)

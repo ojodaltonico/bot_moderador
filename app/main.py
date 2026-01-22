@@ -7,6 +7,16 @@ from app.dependencies import get_db
 
 # --- Models ---
 from app.models import User, Message, Case, UserAction
+import os
+from app.config import GROUP_ID
+from app.models import User, Message, Case
+from sqlalchemy.orm import Session
+from fastapi import Depends
+from fastapi.responses import FileResponse
+from app.config import MEDIA_IMAGES_PATH
+from app.utils.auth import is_moderator
+import os
+
 
 
 
@@ -59,6 +69,9 @@ def list_users(db: Session = Depends(get_db)):
 # INGEST MESSAGES
 # =========================
 
+from app.config import GROUP_ID
+from app.models import User, Message, Case
+
 @app.post("/ingest_message")
 def ingest_message(payload: dict, db: Session = Depends(get_db)):
 
@@ -72,7 +85,11 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
     if not phone or not message_type:
         return {"error": "invalid payload"}
 
-    # 1️⃣ Buscar o crear usuario
+    # 🚫 ignorar completamente audio y video
+    if message_type in ["audio", "video"]:
+        return {"ignored": True}
+
+    # 1️⃣ usuario
     user = db.query(User).filter(User.phone == phone).first()
     if not user:
         user = User(phone=phone, name=name)
@@ -80,21 +97,31 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(user)
 
-    # 2️⃣ Guardar mensaje
+    # 2️⃣ mensaje
     msg = Message(
         user_id=user.id,
         chat_id=chat_id,
         is_group=is_group,
         message_type=message_type,
-        content=content
+        content=content if message_type == "text" else None,
+        media_filename=content if message_type == "image" else None
     )
     db.add(msg)
     db.commit()
     db.refresh(msg)
 
-    # 3️⃣ Detección simple (placeholder)
+    # 🚫 fuera del grupo moderado
+    if not is_group or chat_id != GROUP_ID:
+        return {
+            "stored": True,
+            "flagged": False,
+            "message_id": msg.id
+        }
+
     flagged = False
-    if is_group and message_type == "text":
+
+    # 3️⃣ texto con keywords
+    if message_type == "text":
         keywords = ["vendo", "venta", "precio", "promo", "oferta"]
         if content and any(k in content.lower() for k in keywords):
             flagged = True
@@ -108,18 +135,35 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
             db.add(case)
             db.commit()
 
+    # 4️⃣ imagen → siempre caso
+    elif message_type == "image":
+        flagged = True
+        msg.flagged = True
+
+        case = Case(
+            type="image_review",
+            message_id=msg.id,
+            priority=2
+        )
+        db.add(case)
+        db.commit()
+
     return {
         "stored": True,
         "flagged": flagged,
         "message_id": msg.id
     }
 
+
 @app.get("/cases/next")
 def get_next_case(
-    moderator_phone: str,
+    phone: str,
     db: Session = Depends(get_db)
 ):
-    # 1️⃣ buscar el próximo caso pendiente
+    # 🔐 permiso
+    if not is_moderator(db, phone):
+        return {"error": "forbidden"}
+
     case = (
         db.query(Case)
         .filter(Case.status == "pending")
@@ -130,12 +174,10 @@ def get_next_case(
     if not case:
         return {"message": "no pending cases"}
 
-    # 2️⃣ asignarlo
     case.status = "in_review"
-    case.assigned_to = moderator_phone
+    case.assigned_to = phone
     db.commit()
 
-    # 3️⃣ traer contexto
     message = db.query(Message).filter(Message.id == case.message_id).first()
     user = db.query(User).filter(User.id == message.user_id).first()
 
@@ -145,14 +187,16 @@ def get_next_case(
         "priority": case.priority,
         "message": {
             "id": message.id,
+            "type": message.message_type,
             "content": message.content,
-            "chat_id": message.chat_id,
+            "media": message.media_filename
         },
         "user": {
             "phone": user.phone,
-            "name": user.name,
+            "name": user.name
         }
     }
+
 
 @app.post("/cases/{case_id}/decision")
 def decide_case(
@@ -217,6 +261,12 @@ def decide_case(
             moderator_phone=moderator_phone
         )
         db.add(log)
+
+    # 🧹 borrar imagen si existía
+    if message.media_filename:
+        path = f"media/temp/images/{message.media_filename}"
+        if os.path.exists(path):
+            os.remove(path)
 
     db.commit()
 
@@ -340,3 +390,105 @@ def user_history(phone: str, db: Session = Depends(get_db)):
             for a in actions
         ]
     }
+
+@app.get("/users/{phone}/history")
+def user_history(phone: str, db: Session = Depends(get_db)):
+
+    user = db.query(User).filter(User.phone == phone).first()
+    if not user:
+        return {"error": "user not found"}
+
+    messages = (
+        db.query(Message)
+        .filter(Message.user_id == user.id, Message.flagged == True)
+        .order_by(Message.created_at.desc())
+        .all()
+    )
+
+    history = []
+
+    for msg in messages:
+        case = (
+            db.query(Case)
+            .filter(Case.message_id == msg.id)
+            .first()
+        )
+
+        history.append({
+            "message_id": msg.id,
+            "content": msg.content,
+            "chat_id": msg.chat_id,
+            "flagged": msg.flagged,
+            "case": {
+                "case_id": case.id if case else None,
+                "type": case.type if case else None,
+                "status": case.status if case else None,
+                "resolution": case.resolution if case else None,
+                "resolved_by": case.resolved_by if case else None,
+                "note": case.note if case else None,
+            } if case else None
+        })
+
+    return {
+        "user": {
+            "phone": user.phone,
+            "name": user.name,
+            "status": user.status
+        },
+        "messages": history
+    }
+
+@app.get("/media/images/{filename}")
+def get_image(
+    filename: str,
+    phone: str,
+    db: Session = Depends(get_db)
+):
+    # 🔐 permiso
+    if not is_moderator(db, phone):
+        return {"error": "forbidden"}
+
+    path = os.path.join(MEDIA_IMAGES_PATH, filename)
+
+    if not os.path.exists(path):
+        return {"error": "file not found"}
+
+    return FileResponse(path)
+
+from app.models import Moderator
+from app.config import ADMIN_PHONE
+
+@app.post("/moderators/command")
+def moderator_command(payload: dict, db: Session = Depends(get_db)):
+    sender = payload.get("phone")
+    text = payload.get("content", "").lower()
+
+    if sender != ADMIN_PHONE:
+        return {"ignored": True}
+
+    parts = text.split()
+
+    if len(parts) != 3 or parts[1] != "mod":
+        return {"ignored": True}
+
+    action, _, target_phone = parts
+
+    mod = db.query(Moderator).filter(Moderator.phone == target_phone).first()
+
+    if action == "agregar":
+        if not mod:
+            mod = Moderator(phone=target_phone)
+            db.add(mod)
+        else:
+            mod.active = True
+
+        db.commit()
+        return {"status": "moderator added", "phone": target_phone}
+
+    if action == "quitar":
+        if mod:
+            mod.active = False
+            db.commit()
+        return {"status": "moderator removed", "phone": target_phone}
+
+    return {"ignored": True}
