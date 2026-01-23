@@ -14,12 +14,14 @@ import path from "path";
 // ================================
 const API_BASE_URL = "http://localhost:8000";
 const GROUP_ID = "120363406312544822@g.us";
+let socketReady = false;
+
 
 // Palabras clave para detección de ventas
 const SALES_KEYWORDS = ["vendo", "venta", "compro", "precio", "promo", "oferta", "negocio", "negociable", "venda", "comprar", "vendiendo"];
 
 // Directorios para medios
-const IMAGE_DIR = path.resolve("./media/temp/images");
+const IMAGE_DIR = path.resolve("../media/temp/images");
 if (!fs.existsSync(IMAGE_DIR)) {
   fs.mkdirSync(IMAGE_DIR, { recursive: true });
 }
@@ -70,7 +72,11 @@ async function removeUserFromGroup(sock, chatId, userPhone) {
 // ================================
 // FUNCIÓN PARA PROCESAR INSTRUCCIONES
 // ================================
-async function processInstructions(instructions, sock) {
+async function processInstructions(instructions, sock, originalChatId = null) {
+    if (!socketReady) {
+        console.log("⏳ Socket no listo. Cancelando procesamiento de instrucciones.");
+        return;
+    }
     if (!instructions) {
         console.log("⚠️ No hay instrucciones para procesar");
         return;
@@ -97,11 +103,13 @@ async function processInstructions(instructions, sock) {
 
             // 1. Enviar mensaje
             if (instruction.send_message && instruction.to && instruction.text) {
+                // 🔧 SOLO usar originalChatId si NO es un grupo
                 let targetChat = instruction.to;
 
-                // Si no tiene @, es un número de teléfono
-                if (!targetChat.includes('@')) {
-                    targetChat = `${targetChat}@s.whatsapp.net`;
+                // Si el 'to' no incluye '@', es solo un número de teléfono
+                // En ese caso, usar el originalChatId que tiene el formato correcto (@lid o @s.whatsapp.net)
+                if (originalChatId && !instruction.to.includes('@g.us')) {
+                    targetChat = originalChatId;
                 }
 
                 console.log(`📤 Enviando mensaje a ${targetChat}`);
@@ -114,8 +122,9 @@ async function processInstructions(instructions, sock) {
             // 2. Enviar imagen
             if (instruction.send_image && instruction.to && instruction.image_path) {
                 let targetChat = instruction.to;
-                if (!targetChat.includes('@')) {
-                    targetChat = `${targetChat}@s.whatsapp.net`;
+
+                if (originalChatId && !instruction.to.includes('@g.us')) {
+                    targetChat = originalChatId;
                 }
 
                 const imagePath = path.join(IMAGE_DIR, instruction.image_path);
@@ -135,12 +144,15 @@ async function processInstructions(instructions, sock) {
 
             // 3. Borrar mensaje del grupo
             if (instruction.delete_message && instruction.message_key) {
+                console.log("🗑️ Intentando borrar mensaje del grupo...");
                 const messageKey = JSON.parse(instruction.message_key);
+                console.log("   Key parseada:", messageKey);
                 await deleteMessageFromGroup(sock, messageKey);
             }
 
             // 4. Expulsar usuario del grupo
             if (instruction.remove_user && instruction.chat_id && instruction.user_phone) {
+                console.log("🚫 Intentando expulsar usuario...");
                 await removeUserFromGroup(sock, instruction.chat_id, instruction.user_phone);
             }
 
@@ -172,6 +184,7 @@ async function start() {
     }
 
     if (connection === "close") {
+    socketReady = false;
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       console.log(`Conexión cerrada. Razón: ${reason}`);
 
@@ -182,8 +195,10 @@ async function start() {
     }
 
     if (connection === "open") {
-      console.log("✅ WhatsApp conectado correctamente");
-    }
+  console.log("✅ WhatsApp conectado y listo para enviar mensajes");
+  socketReady = true;
+}
+
   });
 
   // ============================================
@@ -326,7 +341,7 @@ async function start() {
             console.log("✅ Respuesta de /moderation/response:", response.data);
 
             if (response.data.instructions) {
-              await processInstructions(response.data.instructions, sock);
+              await processInstructions(response.data.instructions, sock, chatId);
             }
           } catch (error) {
             console.error("Error en /moderation/response:", error.message);
@@ -339,7 +354,8 @@ async function start() {
           const payload = {
             phone: sender,
             message: messageText,
-            name: pushName
+            name: pushName,
+            reply_jid: chatId
           };
 
           console.log("📤 Enviando a /conversation:", payload);
@@ -347,7 +363,7 @@ async function start() {
           console.log("✅ Respuesta de /conversation:", response.data);
 
           if (response.data.instructions) {
-            await processInstructions(response.data.instructions, sock);
+            await processInstructions(response.data.instructions, sock, chatId);
           }
         } catch (error) {
           console.error("Error en /conversation:", error.message);
