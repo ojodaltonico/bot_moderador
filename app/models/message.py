@@ -23,7 +23,10 @@ class Message(Base):
     content = Column(String, nullable=True)
 
     # WhatsApp message key (completa, en JSON)
-    whatsapp_message_key = Column(Text, nullable=True)  # <-- CAMBIO AQUÍ
+    whatsapp_message_key = Column(Text, nullable=True)
+
+    # Quién envió el mensaje en el grupo (JID real)
+    participant_jid = Column(String, nullable=True, index=True)
 
     # Media
     media_filename = Column(String, nullable=True)

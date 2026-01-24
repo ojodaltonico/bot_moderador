@@ -160,6 +160,7 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
         message_type = payload.get("message_type")
         content = payload.get("content")
         whatsapp_message_key = payload.get("whatsapp_message_key")
+        participant_jid = payload.get("participant_jid")
 
         if not phone or not message_type:
             return {"error": "invalid payload"}
@@ -186,7 +187,8 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
             message_type=message_type,
             content=content if message_type == "text" else None,
             media_filename=content if message_type == "image" else None,
-            whatsapp_message_key=whatsapp_message_key
+            whatsapp_message_key=whatsapp_message_key,
+            participant_jid=participant_jid
         )
         db.add(msg)
         db.commit()
@@ -1148,6 +1150,17 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
         case.status = "resolved"
         case.resolution = "banned"
         case.resolved_by = phone
+        case.resolved_at = datetime.now()  # <-- FALTABA ESTO
+
+        # Registrar acción
+        log = UserAction(
+            user_id=user.id,
+            case_id=case.id,
+            action="ban",
+            note="Expulsado del grupo (3er strike)",
+            moderator_phone=phone
+        )
+        db.add(log)
 
         # 1. Confirmar al moderador
         instructions.append({
@@ -1163,12 +1176,29 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
                 "message_key": message.whatsapp_message_key
             })
 
-        # 3. Expulsar del grupo (solo si el bot es admin)
-        instructions.append({
-            "remove_user": True,
-            "chat_id": message.chat_id,
-            "user_phone": user.phone
-        })
+        # 3. Expulsar del grupo usando participant_jid
+        participant_to_remove = message.participant_jid
+        if message.whatsapp_message_key:
+            try:
+                import json
+                key_data = json.loads(message.whatsapp_message_key)
+                # Preferir participantAlt para acciones administrativas
+                participant_to_remove = key_data.get("participantAlt") or message.participant_jid
+            except:
+                pass
+
+        if participant_to_remove:
+            instructions.append({
+                "remove_user": True,
+                "chat_id": message.chat_id,
+                "participant_jid": participant_to_remove  # Usar el alternativo
+            })
+        else:
+            instructions.append({
+                "send_message": True,
+                "to": phone,
+                "text": "⚠️ No se pudo expulsar automáticamente (participant_jid faltante)."
+            })
 
     else:
         instructions.append({

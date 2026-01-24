@@ -49,25 +49,49 @@ async function deleteMessageFromGroup(sock, messageKey) {
 // ================================
 // FUNCIÓN PARA EXPULSAR USUARIOS
 // ================================
-async function removeUserFromGroup(sock, chatId, userPhone) {
+// En la función removeUserFromGroup (línea ~50)
+async function removeUserFromGroup(sock, chatId, participantJid) {
     try {
-        console.log(`🚫 Intentando expulsar usuario ${userPhone} del grupo ${chatId}`);
+        console.log(`🚫 Expulsando ${participantJid} del grupo ${chatId}`);
 
-        const participantJid = `${userPhone}@s.whatsapp.net`;
-
+        // Intentar con el JID tal cual viene
+        console.log(`   Intentando con: ${participantJid}`);
         await sock.groupParticipantsUpdate(
             chatId,
             [participantJid],
             "remove"
         );
 
-        console.log(`✅ Usuario ${userPhone} expulsado exitosamente`);
+        console.log(`✅ Usuario expulsado exitosamente`);
         return true;
     } catch (error) {
-        console.error(`❌ Error al expulsar usuario: ${error.message}`);
+        console.error(`❌ Error expulsando usuario:`, error.message);
+        console.error(`   Stack:`, error.stack);
+
+        // Si falla, intentar con formato @s.whatsapp.net
+        if (participantJid.includes('@lid')) {
+            const phoneNumber = participantJid.split('@')[0];
+            const altJid = `${phoneNumber}@s.whatsapp.net`;
+            console.log(`   🔄 Reintentando con formato alternativo: ${altJid}`);
+
+            try {
+                await sock.groupParticipantsUpdate(
+                    chatId,
+                    [altJid],
+                    "remove"
+                );
+                console.log(`✅ Usuario expulsado con formato alternativo`);
+                return true;
+            } catch (error2) {
+                console.error(`❌ También falló con formato alternativo:`, error2.message);
+                return false;
+            }
+        }
+
         return false;
     }
 }
+
 
 // ================================
 // FUNCIÓN PARA PROCESAR INSTRUCCIONES
@@ -151,10 +175,14 @@ async function processInstructions(instructions, sock, originalChatId = null) {
             }
 
             // 4. Expulsar usuario del grupo
-            if (instruction.remove_user && instruction.chat_id && instruction.user_phone) {
-                console.log("🚫 Intentando expulsar usuario...");
-                await removeUserFromGroup(sock, instruction.chat_id, instruction.user_phone);
-            }
+            if (instruction.remove_user && instruction.chat_id && instruction.participant_jid) {
+    await removeUserFromGroup(
+        sock,
+        instruction.chat_id,
+        instruction.participant_jid
+    );
+}
+
 
         } catch (error) {
             console.error("❌ Error procesando instrucción:", error);
@@ -217,6 +245,13 @@ async function start() {
 
       const chatId = msg.key.remoteJid;
       const isGroup = chatId.endsWith("@g.us");
+      // PARTICIPANT REAL (clave para moderación)
+      const participantJid = isGroup
+         ? msg.key.participant
+         : msg.key.remoteJid;
+      console.log("👤 participantJid:", participantJid);
+
+
       const messageType = Object.keys(msg.message)[0];
 
       console.log(`\n📨 Nuevo mensaje recibido:`);
@@ -292,7 +327,8 @@ async function start() {
               is_group: true,
               message_type: messageType === "imageMessage" ? "image" : "text",
               content: messageType === "imageMessage" ? mediaFilename : messageContent,
-              whatsapp_message_key: JSON.stringify(msg.key) // <-- GUARDAR KEY COMPLETA
+              whatsapp_message_key: JSON.stringify(msg.key),
+               participant_jid: participantJid
             };
 
             console.log("📤 Enviando a /ingest_message...");
