@@ -23,15 +23,18 @@ class Case(Base):
     message_id = Column(Integer, ForeignKey("messages.id"))
     message = relationship("Message")
 
+    # Referencia al caso original (solo para apelaciones)
+    original_case_id = Column(Integer, ForeignKey("cases.id"), nullable=True)
+
     # Moderador asignado (opcional)
-    assigned_to = Column(String, nullable=True)  # 🔧 cambiado a String para phone
+    assigned_to = Column(String, nullable=True)
 
     # Resolución
-    resolution = Column(String, nullable=True)  # 🔧 AGREGADO
-    resolved_by = Column(String, nullable=True)  # 🔧 AGREGADO
-    resolved_at = Column(DateTime(timezone=True), nullable=True)  # 🔧 AGREGADO
+    resolution = Column(String, nullable=True)
+    resolved_by = Column(String, nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
 
     # Info extra
-    note = Column(String, nullable=True)  # 🔧 cambiado de 'notes' a 'note'
+    note = Column(String, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())

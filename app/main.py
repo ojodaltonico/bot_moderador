@@ -967,17 +967,21 @@ def handle_conversation(payload: dict, db: Session = Depends(get_db)):
                 "instructions": {
                     "send_message": True,
                     "to": phone,
-                    "text": "🤖 *Bot Moderador*\n\nNo eres moderador.\n\nOpciones:\n• strikes - Ver tus advertencias\n• reglas - Ver reglas del grupo"
+                    "text": "🤖 *Bot Moderador*\n\nOpciones:\n• strikes - Ver tus advertencias\n• reglas - Ver reglas del grupo"
                 }
             }
 
         print(f"   ✅ Es moderador, buscando casos...")
 
-        # Buscar caso pendiente
+        # Buscar caso pendiente (prioridad: apelaciones > infracciones > imágenes)
         case = (
             db.query(Case)
             .filter(Case.status == "pending")
-            .order_by(Case.priority.desc(), Case.id.asc())
+            .order_by(
+                Case.type == "appeal",  # Apelaciones primero
+                Case.priority.asc(),
+                Case.id.asc()
+            )
             .first()
         )
 
@@ -991,7 +995,7 @@ def handle_conversation(payload: dict, db: Session = Depends(get_db)):
                 }
             }
 
-        print(f"   📋 Caso encontrado: #{case.id}")
+        print(f"   📋 Caso encontrado: #{case.id} (tipo: {case.type})")
 
         # Asignar caso
         case.status = "in_review"
@@ -1002,48 +1006,105 @@ def handle_conversation(payload: dict, db: Session = Depends(get_db)):
         msg = db.query(Message).filter(Message.id == case.message_id).first()
         user = db.query(User).filter(User.id == msg.user_id).first()
 
-        # Construir mensaje para el moderador
         instructions = []
 
-        text = f"🚨 *CASO #{case.id}*\n\n"
-        text += f"👤 Usuario: {user.name or user.phone}\n"
-        text += f"⚠️ Strikes acumulados: {user.strikes}/3\n\n"
+        # ===================================
+        # CASO DE APELACIÓN
+        # ===================================
+        if case.type == "appeal":
+            print(f"   📢 Es una apelación")
 
-        if msg.message_type == "text":
-            text += f"💬 Mensaje:\n{msg.content}\n\n"
-        elif msg.message_type == "image":
-            text += f"🖼️ *Imagen sospechosa*\n"
-            text += f"(La imagen se enviará a continuación)\n\n"
+            # Obtener todos los casos/mensajes que causaron strikes
+            cases_with_strikes = (
+                db.query(Case)
+                .join(Message, Case.message_id == Message.id)
+                .join(UserAction, UserAction.case_id == Case.id)
+                .filter(
+                    Message.user_id == user.id,
+                    UserAction.action.in_(["strike", "ban", "warn", "deleted"]),
+                    Case.status == "resolved"
+                )
+                .order_by(Case.resolved_at.desc())
+                .limit(5)
+                .all()
+            )
 
-        text += "🛠️ *¿Qué acción tomas?*\n"
-        text += "Responde con el número:\n\n"
-        text += "1. ✅ Ignorar (no es infracción)\n"
-        text += "2. 🗑️ Borrar mensaje + 1 strike\n"
+            text = f"📢 *APELACIÓN - CASO #{case.id}*\n\n"
+            text += f"👤 Usuario: {user.name or user.phone}\n"
+            text += f"⚠️ Strikes actuales: {user.strikes}/3\n\n"
+            text += f"📝 *Descargo del usuario:*\n{case.note}\n\n"
 
-        if user.strikes >= 2:
-            text += "3. 🚫 Expulsar (3er strike)\n"
+            if cases_with_strikes:
+                text += "📜 *Mensajes por los que fue penalizado:*\n\n"
+                for i, old_case in enumerate(cases_with_strikes, 1):
+                    old_msg = db.query(Message).filter(Message.id == old_case.message_id).first()
+                    date = old_case.resolved_at.strftime("%d/%m") if old_case.resolved_at else "???"
 
-        text += "\nEjemplo: responde '2' para borrar y sumar strike"
+                    if old_msg.message_type == "text":
+                        content = old_msg.content[:60] + "..." if len(old_msg.content) > 60 else old_msg.content
+                    elif old_msg.message_type == "image":
+                        content = "🖼️ Imagen"
+                    else:
+                        content = f"{old_msg.message_type}"
 
-        instructions.append({
-            "send_message": True,
-            "to": phone,
-            "text": text
-        })
+                    text += f"{i}. {date} - {content}\n"
 
-        # Si hay imagen, enviarla
-        if msg.media_filename:
-            image_path = os.path.join(MEDIA_IMAGES_PATH, msg.media_filename)
-            if os.path.exists(image_path):
-                print(f"   🖼️ Enviando imagen: {msg.media_filename}")
-                instructions.append({
-                    "send_image": True,
-                    "to": phone,
-                    "image_path": msg.media_filename,
-                    "caption": f"🖼️ Imagen del caso #{case.id}\nUsuario: {user.name or user.phone}"
-                })
-            else:
-                print(f"   ⚠️ Imagen no encontrada: {image_path}")
+            text += "\n🛠️ *¿Qué decides?*\n"
+            text += "Responde con el número:\n\n"
+            text += "1. ❌ Rechazar apelación\n"
+            text += "2. ✅ Aceptar y quitar 1 strike\n"
+
+            instructions.append({
+                "send_message": True,
+                "to": phone,
+                "text": text
+            })
+
+        # ===================================
+        # CASO NORMAL (INFRACCIÓN/IMAGEN)
+        # ===================================
+        else:
+            print(f"   🚨 Es un caso normal")
+
+            text = f"🚨 *CASO #{case.id}*\n\n"
+            text += f"👤 Usuario: {user.name or user.phone}\n"
+            text += f"⚠️ Strikes acumulados: {user.strikes}/3\n\n"
+
+            if msg.message_type == "text":
+                text += f"💬 Mensaje:\n{msg.content}\n\n"
+            elif msg.message_type == "image":
+                text += f"🖼️ *Imagen sospechosa*\n"
+                text += f"(La imagen se enviará a continuación)\n\n"
+
+            text += "🛠️ *¿Qué acción tomas?*\n"
+            text += "Responde con el número:\n\n"
+            text += "1. ✅ Ignorar (no es infracción)\n"
+            text += "2. 🗑️ Borrar mensaje + 1 strike\n"
+
+            if user.strikes >= 2:
+                text += "3. 🚫 Expulsar (3er strike)\n"
+
+            text += "\nEjemplo: responde '2' para borrar y sumar strike"
+
+            instructions.append({
+                "send_message": True,
+                "to": phone,
+                "text": text
+            })
+
+            # Si hay imagen, enviarla
+            if msg.media_filename:
+                image_path = os.path.join(MEDIA_IMAGES_PATH, msg.media_filename)
+                if os.path.exists(image_path):
+                    print(f"   🖼️ Enviando imagen: {msg.media_filename}")
+                    instructions.append({
+                        "send_image": True,
+                        "to": phone,
+                        "image_path": msg.media_filename,
+                        "caption": f"🖼️ Imagen del caso #{case.id}\nUsuario: {user.name or user.phone}"
+                    })
+                else:
+                    print(f"   ⚠️ Imagen no encontrada: {image_path}")
 
         print(f"   ✅ Retornando {len(instructions)} instrucciones")
         return {"instructions": instructions}
@@ -1058,8 +1119,6 @@ def handle_conversation(payload: dict, db: Session = Depends(get_db)):
     print(f"   ✅ Handler retornó: {result}")
     return result
 
-
-# En app/main.py, actualiza la función process_moderator_response:
 
 @app.post("/moderation/response")
 def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
@@ -1094,118 +1153,199 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
     message = db.query(Message).filter(Message.id == case.message_id).first()
     user = db.query(User).filter(User.id == message.user_id).first()
 
-    # Procesar respuesta
     instructions = []
 
-    if response == "1":
-        # Ignorar - solo cerrar caso
-        case.status = "resolved"
-        case.resolution = "ignored"
-        case.resolved_by = phone
+    # ============================================
+    # CASO DE APELACIÓN
+    # ============================================
+    if case.type == "appeal":
+        if response == "1":
+            # Rechazar apelación
+            case.status = "resolved"
+            case.resolution = "appeal_rejected"
+            case.resolved_by = phone
+            case.resolved_at = datetime.now()
 
-        instructions.append({
-            "send_message": True,
-            "to": phone,
-            "text": f"✅ Caso #{case.id} marcado como 'ignorado'.\n\nEscribe 'estoy' para siguiente caso."
-        })
-
-    elif response == "2":
-        # Borrar mensaje y sumar strike
-        message.deleted = True
-        user.strikes += 1
-
-        # Si llega a 3 strikes, marcar como baneado
-        if user.strikes >= 3:
-            user.status = "banned"
-
-        case.status = "resolved"
-        case.resolution = "deleted"
-        case.resolved_by = phone
-
-        # 1. Confirmar al moderador
-        instructions.append({
-            "send_message": True,
-            "to": phone,
-            "text": f"✅ Mensaje borrado.\nUsuario {user.phone} ahora tiene {user.strikes} strike(s)."
-        })
-
-        # 2. Borrar mensaje del grupo (SI tenemos el ID)
-        if message.whatsapp_message_key:
-            instructions.append({
-                "delete_message": True,
-                "message_key": message.whatsapp_message_key  # <-- Cambiar
-            })
-        else:
-            # Si no tenemos ID, avisar
             instructions.append({
                 "send_message": True,
                 "to": phone,
-                "text": f"⚠️ No se pudo borrar automáticamente (falta ID).\nBórralo manualmente del grupo."
+                "text": f"❌ Apelación rechazada para {user.phone}.\n\nEscribe 'estoy' para siguiente caso."
             })
 
-    elif response == "3" and user.strikes >= 2:
-        # Expulsar (3er strike)
-        user.strikes += 1
-        user.status = "banned"
-        case.status = "resolved"
-        case.resolution = "banned"
-        case.resolved_by = phone
-        case.resolved_at = datetime.now()  # <-- FALTABA ESTO
-
-        # Registrar acción
-        log = UserAction(
-            user_id=user.id,
-            case_id=case.id,
-            action="ban",
-            note="Expulsado del grupo (3er strike)",
-            moderator_phone=phone
-        )
-        db.add(log)
-
-        # 1. Confirmar al moderador
-        instructions.append({
-            "send_message": True,
-            "to": phone,
-            "text": f"✅ Usuario {user.phone} expulsado (3er strike)."
-        })
-
-        # 2. Borrar mensaje del grupo
-        if message.whatsapp_message_key:
             instructions.append({
-                "delete_message": True,
-                "message_key": message.whatsapp_message_key
+                "send_message": True,
+                "to": user.phone,
+                "text": f"❌ Tu apelación fue revisada y rechazada.\n\nStrikes actuales: {user.strikes}/3"
             })
 
-        # 3. Expulsar del grupo usando participant_jid
-        participant_to_remove = message.participant_jid
-        if message.whatsapp_message_key:
-            try:
-                import json
-                key_data = json.loads(message.whatsapp_message_key)
-                # Preferir participantAlt para acciones administrativas
-                participant_to_remove = key_data.get("participantAlt") or message.participant_jid
-            except:
-                pass
+        elif response == "2":
+            # Aceptar apelación - quitar 1 strike
+            if user.strikes > 0:
+                user.strikes -= 1
 
-        if participant_to_remove:
+                # Si estaba baneado y ahora tiene menos de 3, reactivar
+                if user.status == "banned" and user.strikes < 3:
+                    user.status = "active"
+
+                # Registrar acción
+                log = UserAction(
+                    user_id=user.id,
+                    case_id=case.id,
+                    action="strike_removed",
+                    note="Apelación aceptada",
+                    moderator_phone=phone
+                )
+                db.add(log)
+
+            case.status = "resolved"
+            case.resolution = "appeal_accepted"
+            case.resolved_by = phone
+            case.resolved_at = datetime.now()
+
             instructions.append({
-                "remove_user": True,
-                "chat_id": message.chat_id,
-                "participant_jid": participant_to_remove  # Usar el alternativo
+                "send_message": True,
+                "to": phone,
+                "text": f"✅ Apelación aceptada.\n\n{user.phone} ahora tiene {user.strikes} strike(s).\n\nEscribe 'estoy' para siguiente caso."
             })
+
+            instructions.append({
+                "send_message": True,
+                "to": user.phone,
+                "text": f"✅ Tu apelación fue aceptada.\n\nSe quitó 1 strike. Ahora tienes {user.strikes}/3 strikes.\n\n¡Gracias por tu paciencia!"
+            })
+
         else:
             instructions.append({
                 "send_message": True,
                 "to": phone,
-                "text": "⚠️ No se pudo expulsar automáticamente (participant_jid faltante)."
+                "text": "❌ Opción no válida para apelación.\n\nOpciones: 1 (rechazar), 2 (aceptar y quitar strike)"
             })
+            db.commit()
+            return {"instructions": instructions}
 
+    # ============================================
+    # CASOS NORMALES (INFRACCIONES)
+    # ============================================
     else:
-        instructions.append({
-            "send_message": True,
-            "to": phone,
-            "text": "❌ Opción no válida.\n\nOpciones: 1 (ignorar), 2 (borrar+strike), 3 (expulsar, solo si tiene 2+ strikes)"
-        })
+        if response == "1":
+            # Ignorar - solo cerrar caso
+            case.status = "resolved"
+            case.resolution = "ignored"
+            case.resolved_by = phone
+            case.resolved_at = datetime.now()
+
+            instructions.append({
+                "send_message": True,
+                "to": phone,
+                "text": f"✅ Caso #{case.id} marcado como 'ignorado'.\n\nEscribe 'estoy' para siguiente caso."
+            })
+
+        elif response == "2":
+            # Borrar mensaje y sumar strike
+            message.deleted = True
+            user.strikes += 1
+
+            # Si llega a 3 strikes, marcar como baneado
+            if user.strikes >= 3:
+                user.status = "banned"
+
+            # Registrar acción
+            log = UserAction(
+                user_id=user.id,
+                case_id=case.id,
+                action="strike",
+                note="Mensaje borrado por infracción",
+                moderator_phone=phone
+            )
+            db.add(log)
+
+            case.status = "resolved"
+            case.resolution = "deleted"
+            case.resolved_by = phone
+            case.resolved_at = datetime.now()
+
+            # Confirmar al moderador
+            instructions.append({
+                "send_message": True,
+                "to": phone,
+                "text": f"✅ Mensaje borrado.\nUsuario {user.phone} ahora tiene {user.strikes} strike(s).\n\nEscribe 'estoy' para siguiente caso."
+            })
+
+            # Borrar mensaje del grupo (SI tenemos el ID)
+            if message.whatsapp_message_key:
+                instructions.append({
+                    "delete_message": True,
+                    "message_key": message.whatsapp_message_key
+                })
+            else:
+                instructions.append({
+                    "send_message": True,
+                    "to": phone,
+                    "text": f"⚠️ No se pudo borrar automáticamente (falta ID).\nBórralo manualmente del grupo."
+                })
+
+        elif response == "3" and user.strikes >= 2:
+            # Expulsar (3er strike)
+            user.strikes += 1
+            user.status = "banned"
+            case.status = "resolved"
+            case.resolution = "banned"
+            case.resolved_by = phone
+            case.resolved_at = datetime.now()
+
+            # Registrar acción
+            log = UserAction(
+                user_id=user.id,
+                case_id=case.id,
+                action="ban",
+                note="Expulsado del grupo (3er strike)",
+                moderator_phone=phone
+            )
+            db.add(log)
+
+            # Confirmar al moderador
+            instructions.append({
+                "send_message": True,
+                "to": phone,
+                "text": f"✅ Usuario {user.phone} expulsado (3er strike).\n\nEscribe 'estoy' para siguiente caso."
+            })
+
+            # Borrar mensaje del grupo
+            if message.whatsapp_message_key:
+                instructions.append({
+                    "delete_message": True,
+                    "message_key": message.whatsapp_message_key
+                })
+
+            # Expulsar del grupo usando participant_jid
+            participant_to_remove = message.participant_jid
+            if message.whatsapp_message_key:
+                try:
+                    import json
+                    key_data = json.loads(message.whatsapp_message_key)
+                    participant_to_remove = key_data.get("participantAlt") or message.participant_jid
+                except:
+                    pass
+
+            if participant_to_remove:
+                instructions.append({
+                    "remove_user": True,
+                    "chat_id": message.chat_id,
+                    "participant_jid": participant_to_remove
+                })
+            else:
+                instructions.append({
+                    "send_message": True,
+                    "to": phone,
+                    "text": "⚠️ No se pudo expulsar automáticamente (participant_jid faltante)."
+                })
+
+        else:
+            instructions.append({
+                "send_message": True,
+                "to": phone,
+                "text": "❌ Opción no válida.\n\nOpciones: 1 (ignorar), 2 (borrar+strike), 3 (expulsar, solo si tiene 2+ strikes)"
+            })
 
     db.commit()
     return {"instructions": instructions}
