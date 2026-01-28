@@ -7,6 +7,7 @@ class User(Base):
 
     id = Column(Integer, primary_key=True)
     phone = Column(String, unique=True, index=True, nullable=False)
+    real_phone = Column(String, nullable=True)
     name = Column(String, nullable=True)
 
     role = Column(String, default="user")     # user | moderator | admin

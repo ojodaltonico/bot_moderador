@@ -154,6 +154,7 @@ def get_user_history(
 def ingest_message(payload: dict, db: Session = Depends(get_db)):
     try:
         phone = payload.get("phone")
+        real_phone = payload.get("real_phone")
         name = payload.get("name")
         chat_id = payload.get("chat_id")
         is_group = payload.get("is_group", True)
@@ -174,10 +175,15 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
         # 1️⃣ usuario
         user = db.query(User).filter(User.phone == phone).first()
         if not user:
-            user = User(phone=phone, name=name)
+            user = User(phone=phone, real_phone=real_phone, name=name)
             db.add(user)
             db.commit()
             db.refresh(user)
+        else:
+            # Actualizar real_phone si cambió
+            if real_phone and user.real_phone != real_phone:
+                user.real_phone = real_phone
+                db.commit()
 
         # 2️⃣ mensaje
         msg = Message(
@@ -928,7 +934,7 @@ def create_simple_appeal(
         "instructions": {
             "send_message": True,
             "to": phone,
-            "text": f"✅ Apelación registrada (ID: {appeal.id}).\nLos moderadores la revisarán pronto."
+            "text": f"✅ Apelación registrada (ID: {appeal.id})."
         }
     }
 
@@ -1054,6 +1060,10 @@ def handle_conversation(payload: dict, db: Session = Depends(get_db)):
             text += "1. ❌ Rechazar apelación\n"
             text += "2. ✅ Aceptar y quitar 1 strike\n"
 
+            # Si el usuario está baneado, ofrecer readmisión
+            if user.status == "banned":
+                text += "3. 🔄 Readmitir al grupo (quita 1 strike)\n"
+
             instructions.append({
                 "send_message": True,
                 "to": phone,
@@ -1066,8 +1076,12 @@ def handle_conversation(payload: dict, db: Session = Depends(get_db)):
         else:
             print(f"   🚨 Es un caso normal")
 
+            # Mostrar número real si existe
+            display_phone = user.real_phone or user.phone
+
             text = f"🚨 *CASO #{case.id}*\n\n"
-            text += f"👤 Usuario: {user.name or user.phone}\n"
+            text += f"👤 Usuario: {user.name or 'Sin nombre'}\n"
+            text += f"📞 Número: +{display_phone}\n"
             text += f"⚠️ Strikes acumulados: {user.strikes}/3\n\n"
 
             if msg.message_type == "text":
@@ -1214,14 +1228,107 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
                 "text": f"✅ Tu apelación fue aceptada.\n\nSe quitó 1 strike. Ahora tienes {user.strikes}/3 strikes.\n\n¡Gracias por tu paciencia!"
             })
 
+        elif response == "3" and user.status == "banned":
+            # Aceptar apelación y quitar 1 strike (usuario expulsado)
+            if user.strikes > 0:
+                user.strikes -= 1
+
+            # Si estaba baneado y ahora tiene menos de 3, cambiar a warned
+            if user.status == "banned" and user.strikes < 3:
+                user.status = "warned"
+
+            # Registrar acción
+            log = UserAction(
+                user_id=user.id,
+                case_id=case.id,
+                action="strike_removed",
+                note="Apelación aceptada - Strike removido (usuario expulsado)",
+                moderator_phone=phone
+            )
+            db.add(log)
+
+            case.status = "resolved"
+            case.resolution = "appeal_accepted_expelled"
+            case.resolved_by = phone
+            case.resolved_at = datetime.now()
+
+            # Buscar el participantAlt (número real) del usuario
+            user_message = (
+                db.query(Message)
+                .filter(
+                    Message.user_id == user.id,
+                    Message.chat_id == GROUP_ID,
+                    Message.whatsapp_message_key.isnot(None)
+                )
+                .order_by(Message.created_at.desc())
+                .first()
+            )
+
+            participant_alt = None
+            if user_message and user_message.whatsapp_message_key:
+                try:
+                    import json
+                    key_data = json.loads(user_message.whatsapp_message_key)
+                    participant_alt = key_data.get("participantAlt")
+                    print(f"   📞 participantAlt encontrado: {participant_alt}")
+                except:
+                    pass
+
+            # Formatear número para mostrar
+            display_phone = user.real_phone or user.phone
+
+            # Si no hay participantAlt, no intentar agregar
+            if participant_alt:
+                # Intentar agregar automáticamente con participantAlt
+                instructions.append({
+                    "add_user": True,
+                    "chat_id": GROUP_ID,
+                    "participant_jid": participant_alt  # Usar participantAlt
+                })
+
+                instructions.append({
+                    "send_message": True,
+                    "to": phone,
+                    "text": (
+                        f"✅ Apelación aceptada\n\n"
+                        f"👤 Usuario: {user.name or 'Sin nombre'}\n"
+                        f"📞 Número: +{display_phone}\n"
+                        f"⚠️ Strikes: {user.strikes}/3\n\n"
+                        f"🔄 Intentando agregarlo automáticamente...\n\n"
+                        f"Escribe 'estoy' para siguiente caso."
+                    )
+                })
+            else:
+                # Fallback: mostrar número para agregar manualmente
+                instructions.append({
+                    "send_message": True,
+                    "to": phone,
+                    "text": (
+                        f"✅ Apelación aceptada\n\n"
+                        f"👤 Usuario: {user.name or 'Sin nombre'}\n"
+                        f"📞 Número: +{display_phone}\n"
+                        f"⚠️ Strikes: {user.strikes}/3\n\n"
+                        f"⚠️ *ACCIÓN REQUERIDA:*\n"
+                        f"Debes agregar manualmente al usuario.\n\n"
+                        f"💡 Busca el contacto por nombre o número.\n\n"
+                        f"Escribe 'estoy' para siguiente caso."
+                    )
+                })
+
         else:
-            instructions.append({
-                "send_message": True,
-                "to": phone,
-                "text": "❌ Opción no válida para apelación.\n\nOpciones: 1 (rechazar), 2 (aceptar y quitar strike)"
-            })
-            db.commit()
-            return {"instructions": instructions}
+            # Verificar si el usuario está baneado para mostrar la opción correcta
+            if user.status == "banned":
+                instructions.append({
+                    "send_message": True,
+                    "to": phone,
+                    "text": "❌ Opción no válida para apelación.\n\nOpciones:\n1 (rechazar)\n2 (aceptar y quitar 1 strike)\n3 (readmitir al grupo)"
+                })
+            else:
+                instructions.append({
+                    "send_message": True,
+                    "to": phone,
+                    "text": "❌ Opción no válida para apelación.\n\nOpciones: 1 (rechazar), 2 (aceptar y quitar strike)"
+                })
 
     # ============================================
     # CASOS NORMALES (INFRACCIONES)
@@ -1268,7 +1375,7 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
             instructions.append({
                 "send_message": True,
                 "to": phone,
-                "text": f"✅ Mensaje borrado.\nUsuario {user.phone} ahora tiene {user.strikes} strike(s).\n\nEscribe 'estoy' para siguiente caso."
+                "text": f"✅ Mensaje borrado.\nUsuario {user.real_phone} ahora tiene {user.strikes} strike(s).\n\nEscribe 'estoy' para siguiente caso."
             })
 
             # Borrar mensaje del grupo (SI tenemos el ID)
@@ -1307,7 +1414,7 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
             instructions.append({
                 "send_message": True,
                 "to": phone,
-                "text": f"✅ Usuario {user.phone} expulsado (3er strike).\n\nEscribe 'estoy' para siguiente caso."
+                "text": f"✅ Usuario {user.real_phone} expulsado (3er strike).\n\nEscribe 'estoy' para siguiente caso."
             })
 
             # Borrar mensaje del grupo

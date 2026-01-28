@@ -92,6 +92,41 @@ async function removeUserFromGroup(sock, chatId, participantJid) {
     }
 }
 
+// ================================
+// FUNCIÓN PARA AGREGAR USUARIOS
+// ================================
+async function addUserToGroup(sock, chatId, participantJid) {
+    try {
+        console.log(`➕ Intentando agregar ${participantJid} al grupo ${chatId}`);
+
+        const result = await sock.groupParticipantsUpdate(
+            chatId,
+            [participantJid],
+            "add"
+        );
+
+        console.log(`   Resultado:`, JSON.stringify(result, null, 2));
+
+        if (result && result[0]) {
+            const status = result[0].status;
+
+            if (status === '200') {
+                console.log(`✅ Usuario agregado exitosamente`);
+                return { success: true };
+            } else {
+                console.log(`⚠️ Status: ${status}`);
+                return { success: false, status: status };
+            }
+        }
+
+        return { success: false, error: 'no_result' };
+
+    } catch (error) {
+        console.error(`❌ Error agregando usuario:`, error.message);
+        return { success: false, error: error.message };
+    }
+}
+
 
 // ================================
 // FUNCIÓN PARA PROCESAR INSTRUCCIONES
@@ -112,7 +147,7 @@ async function processInstructions(instructions, sock, originalChatId = null) {
     let instructionList = [];
     if (Array.isArray(instructions)) {
         instructionList = instructions;
-    } else if (instructions.send_message || instructions.send_image || instructions.delete_message || instructions.remove_user) {
+    } else if (instructions.send_message || instructions.send_image || instructions.delete_message || instructions.remove_user || instructions.add_user) {
         instructionList = [instructions];
     } else {
         console.log("⚠️ Formato de instrucciones no reconocido");
@@ -127,11 +162,8 @@ async function processInstructions(instructions, sock, originalChatId = null) {
 
             // 1. Enviar mensaje
             if (instruction.send_message && instruction.to && instruction.text) {
-                // 🔧 SOLO usar originalChatId si NO es un grupo
                 let targetChat = instruction.to;
 
-                // Si el 'to' no incluye '@', es solo un número de teléfono
-                // En ese caso, usar el originalChatId que tiene el formato correcto (@lid o @s.whatsapp.net)
                 if (originalChatId && !instruction.to.includes('@g.us')) {
                     targetChat = originalChatId;
                 }
@@ -176,13 +208,51 @@ async function processInstructions(instructions, sock, originalChatId = null) {
 
             // 4. Expulsar usuario del grupo
             if (instruction.remove_user && instruction.chat_id && instruction.participant_jid) {
-    await removeUserFromGroup(
-        sock,
-        instruction.chat_id,
-        instruction.participant_jid
-    );
-}
+                await removeUserFromGroup(
+                    sock,
+                    instruction.chat_id,
+                    instruction.participant_jid
+                );
+            }
 
+            // 5. Agregar usuario al grupo
+            if (instruction.add_user && instruction.chat_id && instruction.participant_jid) {
+                console.log("➕ Agregando usuario al grupo...");
+                console.log(`   participant_jid: ${instruction.participant_jid}`);
+
+                const result = await addUserToGroup(
+                    sock,
+                    instruction.chat_id,
+                    instruction.participant_jid
+                );
+
+                console.log(`   Resultado de agregar:`, result);
+
+                // Enviar feedback al moderador sobre el resultado
+                if (!result.success) {
+                    let errorMsg = "❌ No se pudo agregar al usuario. ";
+
+                    if (result.error === 'bot_not_admin') {
+                        errorMsg += "El bot no es administrador del grupo.";
+                    } else if (result.error === 'privacy_settings') {
+                        errorMsg += "El usuario tiene configuración de privacidad que impide agregarlo automáticamente.";
+                    } else if (result.error === 'user_not_found') {
+                        errorMsg += "El número no existe o no pudo ser contactado.";
+                    } else {
+                        errorMsg += `Error: ${result.error}`;
+                    }
+
+                    errorMsg += "\n\n💡 Intenta agregarlo manualmente al grupo.";
+
+                    // Buscar el to del moderador en las instrucciones previas
+                    const moderatorInstruction = instructionList.find(i => i.send_message && i.to);
+                    if (moderatorInstruction) {
+                        await sock.sendMessage(moderatorInstruction.to, { text: errorMsg });
+                    }
+                } else if (result.already_in_group) {
+                    console.log(`✅ Usuario ya estaba en el grupo`);
+                }
+            }
 
         } catch (error) {
             console.error("❌ Error procesando instrucción:", error);
@@ -266,6 +336,14 @@ async function start() {
         sender = chatId.split("@")[0];
       }
 
+      // 👇 AGREGAR ESTE BLOQUE DE DEBUG
+      console.log(`\n🔍 DEBUG - Información completa del remitente:`);
+      console.log(`   msg.key:`, JSON.stringify(msg.key, null, 2));
+      console.log(`   msg.participant:`, msg.participant);
+      console.log(`   msg.pushName:`, msg.pushName);
+      console.log(`   msg.verifiedBizName:`, msg.verifiedBizName);
+      // 👆 FIN BLOQUE DEBUG
+
       const pushName = msg.pushName || "Usuario";
 
       // ============================================
@@ -320,16 +398,25 @@ async function start() {
 
           // Enviar a la API para crear caso
           try {
+            // Extraer el número real del participantAlt
+            let realPhone = sender;
+            if (msg.key.participantAlt) {
+              realPhone = msg.key.participantAlt.split("@")[0];
+            }
+
             const payload = {
               phone: sender,
+              real_phone: realPhone, // 👈 AGREGAR
               name: pushName,
               chat_id: chatId,
               is_group: true,
               message_type: messageType === "imageMessage" ? "image" : "text",
               content: messageType === "imageMessage" ? mediaFilename : messageContent,
               whatsapp_message_key: JSON.stringify(msg.key),
-               participant_jid: participantJid
+              participant_jid: participantJid
             };
+
+            console.log(`   📞 Teléfono real: ${realPhone}`);
 
             console.log("📤 Enviando a /ingest_message...");
             const response = await axios.post(`${API_BASE_URL}/ingest_message`, payload, {
