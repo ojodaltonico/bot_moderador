@@ -1,33 +1,38 @@
 from app.config import ADMIN_PHONE
 from app.models import Moderator
+import re
+
+
+def normalize_phone(phone: str) -> str:
+    """Normaliza números de teléfono quitando caracteres no numéricos"""
+    if not phone:
+        return ""
+    return re.sub(r'\D', '', phone)
 
 
 def is_moderator(db, phone: str) -> bool:
     """
     Verifica si un número es moderador.
-    WhatsApp puede enviar números en diferentes formatos.
+    Busca tanto por LID como por número real.
     """
     if not phone:
         return False
 
-    # Normalizar: quitar espacios y caracteres no numéricos
-    import re
-    normalized = re.sub(r'\D', '', phone)
+    # Normalizar número
+    normalized = normalize_phone(phone)
 
-    # Verificar contra ADMIN_PHONE (ya normalizado en config)
-    if normalized == ADMIN_PHONE:
+    # Verificar contra ADMIN_PHONE
+    if normalized == str(ADMIN_PHONE):
         return True
 
-    # Verificar en la base de datos
-    # Primero con el número normalizado
-    mod = db.query(Moderator).filter(Moderator.phone == normalized, Moderator.active == True).first()
-    if mod:
-        return True
+    # Buscar en la base de datos por LID o por número real
+    mod = db.query(Moderator).filter(
+        Moderator.active == True,
+        (
+            (Moderator.lid == phone) |  # Buscar por LID completo (ej: 9401733800078)
+            (Moderator.phone == phone) |  # Buscar por número original
+            (Moderator.phone == normalized)  # Buscar por número normalizado
+        )
+    ).first()
 
-    # Si no encuentra, intentar también con el original
-    if phone != normalized:
-        mod = db.query(Moderator).filter(Moderator.phone == phone, Moderator.active == True).first()
-        if mod:
-            return True
-
-    return False
+    return mod is not None

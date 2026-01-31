@@ -4,46 +4,24 @@ from datetime import datetime
 import os
 from app.config import MEDIA_IMAGES_PATH
 
-# Crear directorio si no existe
 os.makedirs(MEDIA_IMAGES_PATH, exist_ok=True)
 
-# --- DB ---
 from app.database import Base, engine
 from app.dependencies import get_db
-
-# --- Models ---
 from app.models import User, Message, Case, UserAction, Moderator
-
-# --- Config ---
 from app.config import GROUP_ID, ADMIN_PHONE, MEDIA_IMAGES_PATH
-
-# --- Utils ---
 from app.utils.auth import is_moderator
-
 from fastapi.responses import FileResponse
-
-# =========================
-# APP INIT
-# =========================
 
 app = FastAPI()
 
-# Crear tablas
 Base.metadata.create_all(bind=engine)
 
-
-# =========================
-# HEALTH
-# =========================
 
 @app.get("/ping")
 def ping():
     return {"status": "ok"}
 
-
-# =========================
-# USERS
-# =========================
 
 @app.post("/users")
 def create_user(
@@ -87,37 +65,22 @@ def get_user_strikes(
     }
 
 
-# =========================
-# 1️⃣ HISTORIAL DEL USUARIO
-# =========================
-
 @app.get("/users/{phone}/history")
 def get_user_history(
         phone: str,
-        requester_phone: str,  # quien consulta
+        requester_phone: str,
         db: Session = Depends(get_db)
 ):
-    """
-    Historial de acciones disciplinarias de un usuario.
-
-    Reglas:
-    - Si requester_phone == phone: puede ver su propio historial
-    - Si requester_phone es moderador/admin: puede ver cualquier historial
-    """
-
-    # Validar que el usuario existe
     user = db.query(User).filter(User.phone == phone).first()
     if not user:
         raise HTTPException(status_code=404, detail="user not found")
 
-    # Verificar permisos
     is_self = (requester_phone == phone)
     is_mod = is_moderator(db, requester_phone)
 
     if not is_self and not is_mod:
         raise HTTPException(status_code=403, detail="forbidden")
 
-    # Obtener historial de acciones
     actions = (
         db.query(UserAction)
         .filter(UserAction.user_id == user.id)
@@ -146,10 +109,6 @@ def get_user_history(
     }
 
 
-# =========================
-# INGEST MESSAGES
-# =========================
-
 @app.post("/ingest_message")
 def ingest_message(payload: dict, db: Session = Depends(get_db)):
     try:
@@ -166,13 +125,9 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
         if not phone or not message_type:
             return {"error": "invalid payload"}
 
-        print(f"📥 Ingresando mensaje: {phone} - {message_type} - WhatsApp Key: {whatsapp_message_key}")
-
-        # 🚫 ignorar completamente audio y video
         if message_type in ["audio", "video"]:
             return {"ignored": True}
 
-        # 1️⃣ usuario
         user = db.query(User).filter(User.phone == phone).first()
         if not user:
             user = User(phone=phone, real_phone=real_phone, name=name)
@@ -180,12 +135,10 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
             db.commit()
             db.refresh(user)
         else:
-            # Actualizar real_phone si cambió
             if real_phone and user.real_phone != real_phone:
                 user.real_phone = real_phone
                 db.commit()
 
-        # 2️⃣ mensaje
         msg = Message(
             user_id=user.id,
             chat_id=chat_id,
@@ -200,7 +153,6 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(msg)
 
-        # 🚫 fuera del grupo moderado
         if not is_group or chat_id != GROUP_ID:
             return {
                 "stored": True,
@@ -210,7 +162,6 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
 
         flagged = False
 
-        # 3️⃣ texto con keywords
         if message_type == "text":
             keywords = ["vendo", "venta", "precio", "promo", "oferta", "compro", "negocio", "remato", "liquidacion"]
             if content and any(k in content.lower() for k in keywords):
@@ -224,9 +175,7 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
                 )
                 db.add(case)
                 db.commit()
-                print(f"✅ Caso creado por texto: {case.id}")
 
-        # 4️⃣ imagen → siempre caso
         elif message_type == "image":
             flagged = True
             msg.flagged = True
@@ -238,7 +187,6 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
             )
             db.add(case)
             db.commit()
-            print(f"✅ Caso creado por imagen: {case.id}")
 
         return {
             "stored": True,
@@ -253,20 +201,12 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
         return {"error": str(e)}
 
 
-# =========================
-# CASOS - MODERACIÓN
-# =========================
-
 @app.get("/moderation/next")
 def get_next_case_for_moderator(
         phone: str,
         db: Session = Depends(get_db)
 ):
-    """
-    Comando "estoy" - Muestra un caso al moderador con opciones contextuales.
-    """
     if not is_moderator(db, phone):
-        # Si no es moderador, se presenta como bot
         return {
             "instructions": {
                 "send_message": True,
@@ -275,12 +215,11 @@ def get_next_case_for_moderator(
             }
         }
 
-    # Buscar caso pendiente (prioridad: apelaciones > infracciones > imágenes)
     case = (
         db.query(Case)
         .filter(Case.status == "pending")
         .order_by(
-            Case.type == "appeal",  # Apelaciones primero
+            Case.type == "appeal",
             Case.priority.asc(),
             Case.created_at.asc()
         )
@@ -296,16 +235,13 @@ def get_next_case_for_moderator(
             }
         }
 
-    # Asignar caso
     case.status = "in_review"
     case.assigned_to = phone
     db.commit()
 
-    # Obtener datos
     message = db.query(Message).filter(Message.id == case.message_id).first()
     user = db.query(User).filter(User.id == message.user_id).first()
 
-    # Construir mensaje
     lines = []
 
     if case.type == "appeal":
@@ -331,7 +267,6 @@ def get_next_case_for_moderator(
         lines.append("✅ /ignorar - No es infracción")
         lines.append("🗑️ /borrar - Eliminar mensaje del grupo")
 
-        # Solo mostrar expulsión si tiene 2 o más strikes
         if user.strikes >= 2:
             lines.append("🚫 /expulsar - Borrar mensaje y expulsar (3er strike)")
 
@@ -366,35 +301,27 @@ def decide_case(
     message = db.query(Message).filter(Message.id == case.message_id).first()
     user = db.query(User).filter(User.id == message.user_id).first()
 
-    # 1️⃣ aplicar acción lógica
     if action == "approve":
         pass
-
     elif action == "warn":
         user.status = "warned"
-
     elif action == "strike":
         user.strikes += 1
         if user.strikes >= 3:
             user.status = "banned"
-
     elif action == "ban":
         user.status = "banned"
-
     elif action == "delete_message":
         message.deleted = True
-
     else:
         raise HTTPException(status_code=400, detail="invalid action")
 
-    # 2️⃣ cerrar caso
     case.status = "resolved"
     case.resolution = action
     case.resolved_by = moderator_phone
     case.resolved_at = datetime.now()
     case.note = note
 
-    # 📜 registrar historial si hay acción disciplinaria
     if action in ["warn", "strike", "ban", "delete_message"]:
         log = UserAction(
             user_id=user.id,
@@ -405,7 +332,6 @@ def decide_case(
         )
         db.add(log)
 
-    # 🧹 borrar imagen si existía
     if message.media_filename:
         path = os.path.join(MEDIA_IMAGES_PATH, message.media_filename)
         if os.path.exists(path):
@@ -425,22 +351,12 @@ def decide_case(
     }
 
 
-# =========================
-# 2️⃣ HISTORIAL DEL CASO
-# =========================
-
 @app.get("/cases/{case_id}/history")
 def get_case_history(
         case_id: int,
-        phone: str,  # quien consulta
+        phone: str,
         db: Session = Depends(get_db)
 ):
-    """
-    Historial completo de un caso.
-    Solo moderadores pueden ver esto.
-    """
-
-    # Verificar permisos
     if not is_moderator(db, phone):
         raise HTTPException(status_code=403, detail="forbidden")
 
@@ -448,11 +364,9 @@ def get_case_history(
     if not case:
         raise HTTPException(status_code=404, detail="case not found")
 
-    # Mensaje original
     message = db.query(Message).filter(Message.id == case.message_id).first()
     user = db.query(User).filter(User.id == message.user_id).first()
 
-    # Acciones tomadas
     actions = (
         db.query(UserAction)
         .filter(UserAction.case_id == case_id)
@@ -460,7 +374,6 @@ def get_case_history(
         .all()
     )
 
-    # Apelaciones relacionadas
     appeals = (
         db.query(Case)
         .filter(Case.type == "appeal", Case.message_id == case.message_id)
@@ -514,10 +427,6 @@ def get_case_history(
     }
 
 
-# =========================
-# 3️⃣ APELACIONES
-# =========================
-
 @app.post("/appeals")
 def create_appeal(
         payload: dict,
@@ -538,7 +447,6 @@ def create_appeal(
     if not original_case:
         raise HTTPException(status_code=404, detail="original case not found")
 
-    # Verificar que el usuario es el afectado
     message = db.query(Message).filter(Message.id == original_case.message_id).first()
     if message.user_id != user.id:
         raise HTTPException(status_code=403, detail="you can only appeal your own cases")
@@ -566,11 +474,6 @@ def get_case_appeals(
         phone: str,
         db: Session = Depends(get_db)
 ):
-    """
-    Ver apelaciones de un caso.
-    Solo moderadores.
-    """
-
     if not is_moderator(db, phone):
         raise HTTPException(status_code=403, detail="forbidden")
 
@@ -599,17 +502,12 @@ def get_case_appeals(
     }
 
 
-# =========================
-# MEDIA
-# =========================
-
 @app.get("/media/images/{filename}")
 def get_image(
         filename: str,
         phone: str,
         db: Session = Depends(get_db)
 ):
-    # 🔐 permiso
     if not is_moderator(db, phone):
         raise HTTPException(status_code=403, detail="forbidden")
 
@@ -620,10 +518,6 @@ def get_image(
 
     return FileResponse(path)
 
-
-# =========================
-# MODERADORES
-# =========================
 
 @app.post("/moderators/command")
 def moderator_command(payload: dict, db: Session = Depends(get_db)):
@@ -666,15 +560,11 @@ def moderator_action_whatsapp(
         payload: dict,
         db: Session = Depends(get_db)
 ):
-    """
-    Ejecuta acción del moderador y devuelve instrucciones para WhatsApp.
-    """
-    phone = payload.get("phone")  # Moderador
+    phone = payload.get("phone")
     case_id = payload.get("case_id")
-    action = payload.get("action")  # ignore, delete, ban, accept_appeal, reject_appeal
+    action = payload.get("action")
     note = payload.get("note", "")
 
-    # Validar
     if not is_moderator(db, phone):
         raise HTTPException(status_code=403, detail="Solo moderadores")
 
@@ -687,12 +577,10 @@ def moderator_action_whatsapp(
 
     instructions = []
 
-    # === APELACIONES ===
     if case.type == "appeal":
         if action == "accept_appeal":
             if user.strikes > 0:
                 user.strikes -= 1
-                # Registrar acción
                 UserAction(
                     user_id=user.id,
                     case_id=case.id,
@@ -723,7 +611,6 @@ def moderator_action_whatsapp(
                 "text": f"❌ Apelación rechazada."
             })
 
-    # === CASOS NORMALES ===
     else:
         if action == "ignore":
             instructions.append({
@@ -736,7 +623,7 @@ def moderator_action_whatsapp(
             instructions.append({
                 "delete_message": True,
                 "chat_id": message.chat_id,
-                "message_key": message.id  # Necesitarás guardar el ID de WhatsApp
+                "message_key": message.id
             })
             instructions.append({
                 "send_message": True,
@@ -745,7 +632,6 @@ def moderator_action_whatsapp(
             })
 
         elif action == "ban":
-            # Verificar que tenga al menos 2 strikes
             if user.strikes >= 2:
                 user.strikes += 1
                 user.status = "banned"
@@ -768,14 +654,12 @@ def moderator_action_whatsapp(
             else:
                 raise HTTPException(status_code=400, detail="Usuario no tiene strikes suficientes")
 
-    # Cerrar caso
     case.status = "resolved"
     case.resolution = action
     case.resolved_by = phone
     case.resolved_at = datetime.now()
     case.note = note
 
-    # Limpiar imagen si existe
     if message.media_filename and os.path.exists(f"{MEDIA_IMAGES_PATH}/{message.media_filename}"):
         os.remove(f"{MEDIA_IMAGES_PATH}/{message.media_filename}")
 
@@ -784,18 +668,11 @@ def moderator_action_whatsapp(
     return {"ok": True, "instructions": instructions}
 
 
-# =========================
-# INTERFAZ PARA USUARIOS
-# =========================
-
 @app.get("/user/me")
 def user_self_service(
         phone: str,
         db: Session = Depends(get_db)
 ):
-    """
-    Bot se presenta y muestra opciones al usuario.
-    """
     user = db.query(User).filter(User.phone == phone).first()
     if not user:
         user = User(phone=phone)
@@ -825,12 +702,9 @@ Escribe el comando que necesites."""
 @app.get("/user/{phone}/strikes")
 def get_user_strikes_whatsapp(
         phone: str,
-        requester: str,  # Quien pregunta
+        requester: str,
         db: Session = Depends(get_db)
 ):
-    """
-    Usuario consulta sus strikes (solo puede ver los propios).
-    """
     if phone != requester:
         return {
             "instructions": {
@@ -846,7 +720,6 @@ def get_user_strikes_whatsapp(
         db.add(user)
         db.commit()
 
-    # Obtener historial
     actions = (
         db.query(UserAction)
         .filter(UserAction.user_id == user.id)
@@ -885,10 +758,6 @@ def create_simple_appeal(
         payload: dict,
         db: Session = Depends(get_db)
 ):
-    """
-    Apelación directa desde WhatsApp.
-    Formato: /apelar 123 "No estaba vendiendo"
-    """
     phone = payload.get("phone")
     case_id = payload.get("case_id")
     text = payload.get("text", "")
@@ -897,7 +766,6 @@ def create_simple_appeal(
     if not user:
         return {"error": "Usuario no encontrado"}
 
-    # Buscar caso original
     original_case = db.query(Case).filter(Case.id == case_id).first()
     if not original_case:
         return {
@@ -908,7 +776,6 @@ def create_simple_appeal(
             }
         }
 
-    # Verificar que el usuario es el afectado
     message = db.query(Message).filter(Message.id == original_case.message_id).first()
     if message.user_id != user.id:
         return {
@@ -919,11 +786,10 @@ def create_simple_appeal(
             }
         }
 
-    # Crear caso de apelación
     appeal = Case(
         type="appeal",
         status="pending",
-        priority=0,  # Máxima prioridad
+        priority=0,
         message_id=original_case.message_id,
         note=f"Apelación: {text}"
     )
@@ -939,36 +805,19 @@ def create_simple_appeal(
     }
 
 
-# =========================
-# MANEJO DE CONVERSACIONES
-# =========================
-
-from app.handlers.conversation import ConversationHandler
-
-
 @app.post("/conversation")
 def handle_conversation(payload: dict, db: Session = Depends(get_db)):
-    """
-    Endpoint central para manejar todas las conversaciones privadas.
-    WhatsApp envía aquí TODOS los mensajes privados.
-    """
     phone = payload.get("phone")
+    real_phone = payload.get("real_phone")
     message = payload.get("message", "").strip()
     name = payload.get("name", "")
+    reply_jid = payload.get("reply_jid")
 
     if not phone or not message:
         raise HTTPException(status_code=400, detail="Phone and message required")
 
-    print(f"📨 /conversation - Phone: {phone}, Message: {message}")
-
-    # ============================================
-    # COMANDO "ESTOY" - MOSTRAR SIGUIENTE CASO
-    # ============================================
     if message.lower() == "estoy":
-        print(f"   🔍 Comando 'estoy' detectado")
-
         if not is_moderator(db, phone):
-            print(f"   ❌ No es moderador")
             return {
                 "instructions": {
                     "send_message": True,
@@ -977,14 +826,24 @@ def handle_conversation(payload: dict, db: Session = Depends(get_db)):
                 }
             }
 
-        print(f"   ✅ Es moderador, buscando casos...")
+        if real_phone:
+            from app.utils.phone import normalize_phone
+            normalized_real = normalize_phone(real_phone)
 
-        # Buscar caso pendiente (prioridad: apelaciones > infracciones > imágenes)
+            mod = db.query(Moderator).filter(
+                Moderator.phone == normalized_real,
+                Moderator.active == True
+            ).first()
+
+            if mod and not mod.lid:
+                mod.lid = phone
+                db.commit()
+
         case = (
             db.query(Case)
             .filter(Case.status == "pending")
             .order_by(
-                Case.type == "appeal",  # Apelaciones primero
+                Case.type == "appeal",
                 Case.priority.asc(),
                 Case.id.asc()
             )
@@ -992,7 +851,6 @@ def handle_conversation(payload: dict, db: Session = Depends(get_db)):
         )
 
         if not case:
-            print(f"   ℹ️ No hay casos pendientes")
             return {
                 "instructions": {
                     "send_message": True,
@@ -1001,26 +859,16 @@ def handle_conversation(payload: dict, db: Session = Depends(get_db)):
                 }
             }
 
-        print(f"   📋 Caso encontrado: #{case.id} (tipo: {case.type})")
-
-        # Asignar caso
         case.status = "in_review"
         case.assigned_to = phone
         db.commit()
 
-        # Obtener datos
         msg = db.query(Message).filter(Message.id == case.message_id).first()
         user = db.query(User).filter(User.id == msg.user_id).first()
 
         instructions = []
 
-        # ===================================
-        # CASO DE APELACIÓN
-        # ===================================
         if case.type == "appeal":
-            print(f"   📢 Es una apelación")
-
-            # Obtener todos los casos/mensajes que causaron strikes
             cases_with_strikes = (
                 db.query(Case)
                 .join(Message, Case.message_id == Message.id)
@@ -1060,7 +908,6 @@ def handle_conversation(payload: dict, db: Session = Depends(get_db)):
             text += "1. ❌ Rechazar apelación\n"
             text += "2. ✅ Aceptar y quitar 1 strike\n"
 
-            # Si el usuario está baneado, ofrecer readmisión
             if user.status == "banned":
                 text += "3. 🔄 Readmitir al grupo (quita 1 strike)\n"
 
@@ -1070,13 +917,7 @@ def handle_conversation(payload: dict, db: Session = Depends(get_db)):
                 "text": text
             })
 
-        # ===================================
-        # CASO NORMAL (INFRACCIÓN/IMAGEN)
-        # ===================================
         else:
-            print(f"   🚨 Es un caso normal")
-
-            # Mostrar número real si existe
             display_phone = user.real_phone or user.phone
 
             text = f"🚨 *CASO #{case.id}*\n\n"
@@ -1106,48 +947,35 @@ def handle_conversation(payload: dict, db: Session = Depends(get_db)):
                 "text": text
             })
 
-            # Si hay imagen, enviarla
             if msg.media_filename:
                 image_path = os.path.join(MEDIA_IMAGES_PATH, msg.media_filename)
                 if os.path.exists(image_path):
-                    print(f"   🖼️ Enviando imagen: {msg.media_filename}")
                     instructions.append({
                         "send_image": True,
                         "to": phone,
                         "image_path": msg.media_filename,
                         "caption": f"🖼️ Imagen del caso #{case.id}\nUsuario: {user.name or user.phone}"
                     })
-                else:
-                    print(f"   ⚠️ Imagen no encontrada: {image_path}")
 
-        print(f"   ✅ Retornando {len(instructions)} instrucciones")
         return {"instructions": instructions}
 
-    # ============================================
-    # OTROS MENSAJES - USAR HANDLER
-    # ============================================
-    print(f"   ℹ️ Usando ConversationHandler para: {message}")
     from app.handlers.conversation import ConversationHandler
     handler = ConversationHandler(db)
-    result = handler.handle_message(phone, message, name)
-    print(f"   ✅ Handler retornó: {result}")
+    result = handler.handle_message(phone, message, name, reply_jid, real_phone)
     return result
 
 
 @app.post("/moderation/response")
 def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
-    """Procesa respuesta numérica de moderador (1, 2, 3)"""
     phone = payload.get("phone")
     response = payload.get("response", "").strip()
 
     if not phone or not response:
         return {"error": "Missing phone or response"}
 
-    # Verificar si es moderador
     if not is_moderator(db, phone):
         return {"error": "Not a moderator"}
 
-    # Buscar caso asignado a este moderador
     case = (
         db.query(Case)
         .filter(Case.assigned_to == phone, Case.status == "in_review")
@@ -1163,18 +991,13 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
             }]
         }
 
-    # Obtener detalles
     message = db.query(Message).filter(Message.id == case.message_id).first()
     user = db.query(User).filter(User.id == message.user_id).first()
 
     instructions = []
 
-    # ============================================
-    # CASO DE APELACIÓN
-    # ============================================
     if case.type == "appeal":
         if response == "1":
-            # Rechazar apelación
             case.status = "resolved"
             case.resolution = "appeal_rejected"
             case.resolved_by = phone
@@ -1193,15 +1016,12 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
             })
 
         elif response == "2":
-            # Aceptar apelación - quitar 1 strike
             if user.strikes > 0:
                 user.strikes -= 1
 
-                # Si estaba baneado y ahora tiene menos de 3, reactivar
                 if user.status == "banned" and user.strikes < 3:
                     user.status = "active"
 
-                # Registrar acción
                 log = UserAction(
                     user_id=user.id,
                     case_id=case.id,
@@ -1229,15 +1049,12 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
             })
 
         elif response == "3" and user.status == "banned":
-            # Aceptar apelación y quitar 1 strike (usuario expulsado)
             if user.strikes > 0:
                 user.strikes -= 1
 
-            # Si estaba baneado y ahora tiene menos de 3, cambiar a warned
             if user.status == "banned" and user.strikes < 3:
                 user.status = "warned"
 
-            # Registrar acción
             log = UserAction(
                 user_id=user.id,
                 case_id=case.id,
@@ -1252,7 +1069,6 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
             case.resolved_by = phone
             case.resolved_at = datetime.now()
 
-            # Buscar el participantAlt (número real) del usuario
             user_message = (
                 db.query(Message)
                 .filter(
@@ -1270,20 +1086,16 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
                     import json
                     key_data = json.loads(user_message.whatsapp_message_key)
                     participant_alt = key_data.get("participantAlt")
-                    print(f"   📞 participantAlt encontrado: {participant_alt}")
                 except:
                     pass
 
-            # Formatear número para mostrar
             display_phone = user.real_phone or user.phone
 
-            # Si no hay participantAlt, no intentar agregar
             if participant_alt:
-                # Intentar agregar automáticamente con participantAlt
                 instructions.append({
                     "add_user": True,
                     "chat_id": GROUP_ID,
-                    "participant_jid": participant_alt  # Usar participantAlt
+                    "participant_jid": participant_alt
                 })
 
                 instructions.append({
@@ -1299,7 +1111,6 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
                     )
                 })
             else:
-                # Fallback: mostrar número para agregar manualmente
                 instructions.append({
                     "send_message": True,
                     "to": phone,
@@ -1316,7 +1127,6 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
                 })
 
         else:
-            # Verificar si el usuario está baneado para mostrar la opción correcta
             if user.status == "banned":
                 instructions.append({
                     "send_message": True,
@@ -1330,12 +1140,8 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
                     "text": "❌ Opción no válida para apelación.\n\nOpciones: 1 (rechazar), 2 (aceptar y quitar strike)"
                 })
 
-    # ============================================
-    # CASOS NORMALES (INFRACCIONES)
-    # ============================================
     else:
         if response == "1":
-            # Ignorar - solo cerrar caso
             case.status = "resolved"
             case.resolution = "ignored"
             case.resolved_by = phone
@@ -1348,15 +1154,12 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
             })
 
         elif response == "2":
-            # Borrar mensaje y sumar strike
             message.deleted = True
             user.strikes += 1
 
-            # Si llega a 3 strikes, marcar como baneado
             if user.strikes >= 3:
                 user.status = "banned"
 
-            # Registrar acción
             log = UserAction(
                 user_id=user.id,
                 case_id=case.id,
@@ -1371,14 +1174,12 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
             case.resolved_by = phone
             case.resolved_at = datetime.now()
 
-            # Confirmar al moderador
             instructions.append({
                 "send_message": True,
                 "to": phone,
                 "text": f"✅ Mensaje borrado.\nUsuario {user.real_phone} ahora tiene {user.strikes} strike(s).\n\nEscribe 'estoy' para siguiente caso."
             })
 
-            # Borrar mensaje del grupo (SI tenemos el ID)
             if message.whatsapp_message_key:
                 instructions.append({
                     "delete_message": True,
@@ -1392,7 +1193,6 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
                 })
 
         elif response == "3" and user.strikes >= 2:
-            # Expulsar (3er strike)
             user.strikes += 1
             user.status = "banned"
             case.status = "resolved"
@@ -1400,7 +1200,6 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
             case.resolved_by = phone
             case.resolved_at = datetime.now()
 
-            # Registrar acción
             log = UserAction(
                 user_id=user.id,
                 case_id=case.id,
@@ -1410,21 +1209,18 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
             )
             db.add(log)
 
-            # Confirmar al moderador
             instructions.append({
                 "send_message": True,
                 "to": phone,
                 "text": f"✅ Usuario {user.real_phone} expulsado (3er strike).\n\nEscribe 'estoy' para siguiente caso."
             })
 
-            # Borrar mensaje del grupo
             if message.whatsapp_message_key:
                 instructions.append({
                     "delete_message": True,
                     "message_key": message.whatsapp_message_key
                 })
 
-            # Expulsar del grupo usando participant_jid
             participant_to_remove = message.participant_jid
             if message.whatsapp_message_key:
                 try:
@@ -1458,12 +1254,8 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
     return {"instructions": instructions}
 
 
-# En app/main.py, agrega este endpoint:
-
 @app.get("/media/case/{case_id}")
 def get_case_media(case_id: int, phone: str, db: Session = Depends(get_db)):
-    """Sirve la imagen de un caso a moderadores"""
-    # Verificar permisos
     if not is_moderator(db, phone):
         raise HTTPException(status_code=403, detail="forbidden")
 
@@ -1475,10 +1267,8 @@ def get_case_media(case_id: int, phone: str, db: Session = Depends(get_db)):
     if not message or not message.media_filename:
         raise HTTPException(status_code=404, detail="no media for this case")
 
-    # Verificar que el archivo existe
     path = os.path.join(MEDIA_IMAGES_PATH, message.media_filename)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="file not found")
 
-    # Devolver la imagen
     return FileResponse(path, media_type="image/jpeg", filename=message.media_filename)

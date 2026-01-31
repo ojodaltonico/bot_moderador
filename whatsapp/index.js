@@ -13,7 +13,7 @@ import path from "path";
 // CONFIGURACIÓN
 // ================================
 const API_BASE_URL = "http://localhost:8000";
-const GROUP_ID = "120363406312544822@g.us";
+const GROUP_ID = "120363200443002725@g.us";
 let socketReady = false;
 
 
@@ -436,63 +436,72 @@ async function start() {
         return;
       }
 
-      // ============================================
-      // 2. MENSAJES PRIVADOS
-      // ============================================
-      if (!isGroup) {
-        let messageText = "";
 
-        if (messageType === "conversation") {
-          messageText = msg.message.conversation || "";
-        } else if (messageType === "extendedTextMessage") {
-          messageText = msg.message.extendedTextMessage?.text || "";
-        }
 
-        console.log(`💬 Mensaje privado de ${sender}: ${messageText}`);
+// ============================================
+// 2. MENSAJES PRIVADOS
+// ============================================
+if (!isGroup) {
+  let messageText = "";
 
-        // Si es una respuesta numérica (1, 2, 3), enviar a /moderation/response
-        if (/^[123]$/.test(messageText.trim())) {
-          console.log(`🔢 Respuesta numérica detectada: ${messageText}`);
-          try {
-            const payload = {
-              phone: sender,
-              response: messageText.trim()
-            };
+  if (messageType === "conversation") {
+    messageText = msg.message.conversation || "";
+  } else if (messageType === "extendedTextMessage") {
+    messageText = msg.message.extendedTextMessage?.text || "";
+  }
 
-            console.log("📤 Enviando a /moderation/response:", payload);
-            const response = await axios.post(`${API_BASE_URL}/moderation/response`, payload);
-            console.log("✅ Respuesta de /moderation/response:", response.data);
+  // Extraer número real del remoteJidAlt
+  let realPhone = sender;
+  if (msg.key.remoteJidAlt) {
+    realPhone = msg.key.remoteJidAlt.split("@")[0];
+  }
 
-            if (response.data.instructions) {
-              await processInstructions(response.data.instructions, sock, chatId);
-            }
-          } catch (error) {
-            console.error("Error en /moderation/response:", error.message);
-          }
-          return;
-        }
+  console.log(`💬 Mensaje privado de ${sender} (real: ${realPhone}): ${messageText}`);
 
-        // Si no es numérico, enviar a /conversation
-        try {
-          const payload = {
-            phone: sender,
-            message: messageText,
-            name: pushName,
-            reply_jid: chatId
-          };
+  // Si es una respuesta numérica (1, 2, 3), enviar a /moderation/response
+  if (/^[123]$/.test(messageText.trim())) {
+    console.log(`🔢 Respuesta numérica detectada: ${messageText}`);
+    try {
+      const payload = {
+        phone: sender,
+        response: messageText.trim()
+      };
 
-          console.log("📤 Enviando a /conversation:", payload);
-          const response = await axios.post(`${API_BASE_URL}/conversation`, payload);
-          console.log("✅ Respuesta de /conversation:", response.data);
+      console.log("📤 Enviando a /moderation/response:", payload);
+      const response = await axios.post(`${API_BASE_URL}/moderation/response`, payload);
+      console.log("✅ Respuesta de /moderation/response:", response.data);
 
-          if (response.data.instructions) {
-            await processInstructions(response.data.instructions, sock, chatId);
-          }
-        } catch (error) {
-          console.error("Error en /conversation:", error.message);
-        }
-        return;
+      if (response.data.instructions) {
+        await processInstructions(response.data.instructions, sock, chatId);
       }
+    } catch (error) {
+      console.error("Error en /moderation/response:", error.message);
+    }
+    return;
+  }
+
+  // Si no es numérico, enviar a /conversation
+  try {
+    const payload = {
+      phone: sender,           // LID (9401733800078)
+      real_phone: realPhone,   // Número real (5492954662475)
+      message: messageText,
+      name: pushName,
+      reply_jid: chatId
+    };
+
+    console.log("📤 Enviando a /conversation:", payload);
+    const response = await axios.post(`${API_BASE_URL}/conversation`, payload);
+    console.log("✅ Respuesta de /conversation:", response.data);
+
+    if (response.data.instructions) {
+      await processInstructions(response.data.instructions, sock, chatId);
+    }
+  } catch (error) {
+    console.error("Error en /conversation:", error.message);
+  }
+  return;
+}
 
       // ============================================
       // 3. OTROS GRUPOS (IGNORAR)
