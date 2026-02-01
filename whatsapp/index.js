@@ -324,6 +324,11 @@ async function start() {
 
       const messageType = Object.keys(msg.message)[0];
 
+        console.log(`   🔎 messageType detectado: ${messageType}`);  // 👈 AGREGAR
+        console.log(`   🔎 msg.message:`, JSON.stringify(msg.message, null, 2));  // 👈 AGREGAR
+
+        console.log(`\n📨 Nuevo mensaje recibido:`);
+
       console.log(`\n📨 Nuevo mensaje recibido:`);
       console.log(`   Chat: ${isGroup ? 'Grupo' : 'Privado'}`);
       console.log(`   ID: ${chatId}`);
