@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>🤖 Bot Moderador</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            background: #111;
+            color: #eee;
+            padding: 20px;
+        }
+        .service {
+            border: 1px solid #333;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        .active { color: #4caf50; }
+        .inactive { color: #f44336; }
+
+        button {
+            margin: 3px;
+            padding: 6px 10px;
+            cursor: pointer;
+        }
+
+        pre {
+            background: #000;
+            padding: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 12px;
+        }
+
+        .power {
+            margin-top: 30px;
+            border-top: 1px solid #333;
+            padding-top: 10px;
+        }
+    </style>
+</head>
+<body>
+
+<h1>🤖 Bot Moderador</h1>
+
+<div id="services"></div>
+
+<div class="power">
+    <h2>⚡ Sistema</h2>
+    <button onclick="reboot()">🔄 Reiniciar Raspberry</button>
+    <button onclick="shutdown()">⏻ Apagar Raspberry</button>
+</div>
+
+<script>
+async function loadServices() {
+    const res = await fetch("/status");
+    const services = await res.json();
+    const div = document.getElementById("services");
+    div.innerHTML = "";
+
+    services.forEach(s => {
+        const el = document.createElement("div");
+        el.className = "service";
+        el.innerHTML = `
+            <h3>${s.name}</h3>
+            <p>Estado: <span class="${s.status}">${s.status}</span></p>
+            <button onclick="serviceAction('${s.service}', 'start')">▶ Start</button>
+            <button onclick="serviceAction('${s.service}', 'stop')">⏹ Stop</button>
+            <button onclick="serviceAction('${s.service}', 'restart')">🔁 Restart</button>
+            <button onclick="loadLogs('${s.service}')">📜 Logs</button>
+            <pre id="logs-${s.service}"></pre>
+        `;
+        div.appendChild(el);
+    });
+}
+
+async function serviceAction(service, action) {
+    await fetch(`/service/${service}/${action}`, { method: "POST" });
+    setTimeout(loadServices, 1000);
+}
+
+async function loadLogs(service) {
+    const res = await fetch(`/logs/${service}`);
+    const data = await res.json();
+    document.getElementById(`logs-${service}`).textContent = data.logs;
+}
+
+async function reboot() {
+    if (confirm("¿Reiniciar Raspberry?")) {
+        await fetch("/power/reboot", { method: "POST" });
+    }
+}
+
+async function shutdown() {
+    if (confirm("¿Apagar Raspberry?")) {
+        await fetch("/power/shutdown", { method: "POST" });
+    }
+}
+
+loadServices();
+setInterval(loadServices, 10000);
+</script>
+
+</body>
+</html>
+

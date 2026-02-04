@@ -1,0 +1,11 @@
+[
+  {
+    "name": "WhatsApp Bot",
+    "service": "bot_moderador_whatsapp.service"
+  },
+  {
+    "name": "API Python",
+    "service": "bot_moderador_api.service"
+  }
+]
+
