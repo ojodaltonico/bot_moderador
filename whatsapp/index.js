@@ -306,7 +306,14 @@ async function start() {
   sock.ev.on("messages.upsert", async ({ messages }) => {
     try {
       const msg = messages[0];
-      if (!msg.message) return;
+            // 👇 LOG ANTES DE CUALQUIER RETURN
+      console.log(`\n🔎 RAW MESSAGE DEBUG:`);
+      console.log(`   msg.message:`, msg.message ? 'EXISTS' : 'UNDEFINED');
+      if (msg.message) {
+        console.log(`   msg.message keys:`, Object.keys(msg.message));
+      }
+
+	if (!msg.message) return;
 
       // Ignorar mensajes propios
       if (msg.key.fromMe) {
@@ -315,19 +322,27 @@ async function start() {
 
       const chatId = msg.key.remoteJid;
       const isGroup = chatId.endsWith("@g.us");
+
       // PARTICIPANT REAL (clave para moderación)
       const participantJid = isGroup
-         ? msg.key.participant
+         ? (msg.key.participant || msg.participant)
          : msg.key.remoteJid;
+
       console.log("👤 participantJid:", participantJid);
 
+      // Buscar el tipo de mensaje real (puede estar después de senderKeyDistributionMessage)
+const messageKeys = Object.keys(msg.message);
+const messageType = messageKeys.find(key =>
+  key === 'imageMessage' ||
+  key === 'conversation' ||
+  key === 'extendedTextMessage'
+) || messageKeys[0];
 
-      const messageType = Object.keys(msg.message)[0];
-
-        console.log(`   🔎 messageType detectado: ${messageType}`);  // 👈 AGREGAR
-        console.log(`   🔎 msg.message:`, JSON.stringify(msg.message, null, 2));  // 👈 AGREGAR
-
-        console.log(`\n📨 Nuevo mensaje recibido:`);
+      // 👇 LOGS DE DEBUG
+      console.log(`\n🔎 ===== DEBUG MENSAJE =====`);
+      console.log(`   messageType: ${messageType}`);
+      console.log(`   msg.message:`, JSON.stringify(msg.message, null, 2));
+      console.log(`========================\n`);
 
       console.log(`\n📨 Nuevo mensaje recibido:`);
       console.log(`   Chat: ${isGroup ? 'Grupo' : 'Privado'}`);

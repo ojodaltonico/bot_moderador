@@ -4,8 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="59817fc2-1988-4596-8e7c-973c9a56668a" name="Changes" comment="Funcionando. Elimina y vuelve usuarios. Agregar mod con lid">
+    <list default="true" id="59817fc2-1988-4596-8e7c-973c9a56668a" name="Changes" comment="Funcionando. Elimina y vuelve usuarios. Agregar mod con lid. Logs para imagenes">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/whatsapp/index.js" beforeDir="false" afterPath="$PROJECT_DIR$/whatsapp/index.js" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -266,7 +267,15 @@
       <option name="project" value="LOCAL" />
       <updated>1769888089410</updated>
     </task>
-    <option name="localTasksCounter" value="9" />
+    <task id="LOCAL-00009" summary="Funcionando. Elimina y vuelve usuarios. Agregar mod con lid. Logs para imagenes">
+      <option name="closed" value="true" />
+      <created>1769988368691</created>
+      <option name="number" value="00009" />
+      <option name="presentableId" value="LOCAL-00009" />
+      <option name="project" value="LOCAL" />
+      <updated>1769988368691</updated>
+    </task>
+    <option name="localTasksCounter" value="10" />
     <servers />
   </component>
   <component name="Vcs.Log.Tabs.Properties">
@@ -289,6 +298,7 @@
     <MESSAGE value="Andando, Todo" />
     <MESSAGE value="Funcionando. Elimina y vuelve usuarios" />
     <MESSAGE value="Funcionando. Elimina y vuelve usuarios. Agregar mod con lid" />
-    <option name="LAST_COMMIT_MESSAGE" value="Funcionando. Elimina y vuelve usuarios. Agregar mod con lid" />
+    <MESSAGE value="Funcionando. Elimina y vuelve usuarios. Agregar mod con lid. Logs para imagenes" />
+    <option name="LAST_COMMIT_MESSAGE" value="Funcionando. Elimina y vuelve usuarios. Agregar mod con lid. Logs para imagenes" />
   </component>
 </project>
