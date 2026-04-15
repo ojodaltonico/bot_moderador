@@ -11,7 +11,7 @@ class User(Base):
     name = Column(String, nullable=True)
 
     role = Column(String, default="user")     # user | moderator | admin
-    status = Column(String, default="active") # active | warned | expelled
+    status = Column(String, default="active") # active | warned | banned
 
     strikes = Column(Integer, default=0)
 

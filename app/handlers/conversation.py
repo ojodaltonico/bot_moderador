@@ -1,6 +1,7 @@
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from app.models import User, Moderator, Case, Message, UserAction
+from app.services.groq_chat import ask_groq
 import re
 
 
@@ -50,11 +51,19 @@ class ConversationHandler:
             return self._handle_admin_command(normalized_phone, message_lower, reply_jid, real_phone)
 
         # Comandos de usuario
+        if message_lower in ["menu", "/menu"]:
+            if is_mod:
+                return self._show_moderator_menu(normalized_phone, name, reply_jid)
+            return self._show_user_menu(normalized_phone, name, reply_jid)
+
         if message_lower in ["strikes", "/strikes"]:
             return self._get_user_strikes(normalized_phone, name, reply_jid)
 
         if message_lower in ["reglas", "/reglas"]:
             return self._get_rules(normalized_phone, reply_jid)
+
+        if message_lower in ["ia", "/ia", "hablar con ia", "hablar con la ia"]:
+            return self._show_ai_intro(normalized_phone, name, reply_jid)
 
         # Sistema de apelación mejorado
         if message_lower in ["apelar", "/apelar"]:
@@ -65,10 +74,7 @@ class ConversationHandler:
             return self._process_appeal_text(normalized_phone, message, reply_jid)
 
         # Menú por defecto
-        if is_mod:
-            return self._show_moderator_menu(normalized_phone, name, reply_jid)
-        else:
-            return self._show_user_menu(normalized_phone, name, reply_jid)
+        return self._chat_with_ai(normalized_phone, message, reply_jid)
 
     def _is_moderator(self, phone: str) -> bool:
         """Verifica si es moderador por LID o por número real"""
@@ -152,7 +158,17 @@ class ConversationHandler:
         text += "Tu apelación será revisada por un moderador.\n\n"
         text += "💡 Tip: Sé claro y respetuoso en tu explicación."
 
-        self._mark_user_appealing(phone, True)
+        original_case = self._get_latest_penalty_case(user.id)
+        if not original_case:
+            return {
+                "instructions": {
+                    "send_message": True,
+                    "to": self._target(phone, reply_jid),
+                    "text": "⚠️ No encontré una sanción reciente para asociar la apelación."
+                }
+            }
+
+        self._mark_user_appealing(user, original_case)
 
         return {
             "instructions": {
@@ -171,49 +187,66 @@ class ConversationHandler:
         if not user:
             return False
 
-        appeal = (
+        pending_appeals = (
             self.db.query(Case)
-            .join(Message, Case.message_id == Message.id)
             .filter(
-                Message.user_id == user.id,
                 Case.type == "appeal",
                 Case.status == "pending",
                 Case.note.is_(None),
-                Case.created_at > five_min_ago
+                Case.created_at > five_min_ago,
+                Case.original_case_id.isnot(None)
             )
+            .all()
+        )
+        for appeal in pending_appeals:
+            original_case = self.db.query(Case).filter(Case.id == appeal.original_case_id).first()
+            if not original_case:
+                continue
+            original_message = self.db.query(Message).filter(Message.id == original_case.message_id).first()
+            if original_message and original_message.user_id == user.id:
+                return True
+        return False
+
+    def _get_latest_penalty_case(self, user_id: int):
+        return (
+            self.db.query(Case)
+            .join(Message, Case.message_id == Message.id)
+            .filter(
+                Message.user_id == user_id,
+                Case.status == "resolved",
+                Case.resolution.in_(["warn", "strike", "ban", "delete", "delete_message", "deleted"])
+            )
+            .order_by(Case.resolved_at.desc(), Case.id.desc())
             .first()
         )
-        return appeal is not None
 
-    def _mark_user_appealing(self, phone: str, appealing: bool):
-        """Marca que el usuario está apelando creando un caso temporal"""
-        if not appealing:
-            return
-
-        user = self.db.query(User).filter(User.phone == phone).first()
-        if not user:
-            return
-
-        temp_msg = Message(
-            user_id=user.id,
-            chat_id="temp",
-            is_group=False,
-            message_type="text",
-            content="[Apelación iniciada - esperando descargo]"
+    def _mark_user_appealing(self, user: User, original_case: Case):
+        """Crea una apelación real enlazada al caso sancionatorio original"""
+        existing = (
+            self.db.query(Case)
+            .filter(
+                Case.type == "appeal",
+                Case.status == "pending",
+                Case.note.is_(None),
+                Case.original_case_id == original_case.id
+            )
+            .order_by(Case.created_at.desc())
+            .first()
         )
-        self.db.add(temp_msg)
-        self.db.commit()
-        self.db.refresh(temp_msg)
+        if existing:
+            return existing
 
         appeal = Case(
             type="appeal",
             status="pending",
             priority=0,
-            message_id=temp_msg.id,
+            message_id=original_case.message_id,
+            original_case_id=original_case.id,
             note=None
         )
         self.db.add(appeal)
         self.db.commit()
+        return appeal
 
     def _process_appeal_text(self, phone: str, text: str, reply_jid: str | None):
         """Procesa el texto de apelación del usuario"""
@@ -221,18 +254,26 @@ class ConversationHandler:
         if not user:
             return {"error": "Usuario no encontrado"}
 
-        appeal = (
+        appeal = None
+        pending_appeals = (
             self.db.query(Case)
-            .join(Message, Case.message_id == Message.id)
             .filter(
-                Message.user_id == user.id,
                 Case.type == "appeal",
                 Case.status == "pending",
-                Case.note.is_(None)
+                Case.note.is_(None),
+                Case.original_case_id.isnot(None)
             )
             .order_by(Case.created_at.desc())
-            .first()
+            .all()
         )
+        for candidate in pending_appeals:
+            original_case = self.db.query(Case).filter(Case.id == candidate.original_case_id).first()
+            if not original_case:
+                continue
+            original_message = self.db.query(Message).filter(Message.id == original_case.message_id).first()
+            if original_message and original_message.user_id == user.id:
+                appeal = candidate
+                break
 
         if not appeal:
             return self._show_user_menu(phone, user.name, reply_jid)
@@ -303,6 +344,35 @@ class ConversationHandler:
                 "send_message": True,
                 "to": self._target(phone, reply_jid),
                 "text": rules
+            }
+        }
+
+    def _show_ai_intro(self, phone: str, name: str, reply_jid: str | None):
+        text = (
+            "🗣️ *MODO CHUSMA ACTIVADO*\n\n"
+            f"Hola {name or 'usuario'}, mandame lo que quieras por privado y te respondo con la IA.\n\n"
+            "Tus palabras clave siguen funcionando igual:\n"
+            "• strikes\n"
+            "• reglas\n"
+            "• apelar\n"
+            "• menu\n\n"
+            "Escribe menu para volver."
+        )
+
+        return {
+            "instructions": {
+                "send_message": True,
+                "to": self._target(phone, reply_jid),
+                "text": text
+            }
+        }
+
+    def _chat_with_ai(self, phone: str, message: str, reply_jid: str | None):
+        return {
+            "instructions": {
+                "send_message": True,
+                "to": self._target(phone, reply_jid),
+                "text": ask_groq(message)
             }
         }
 
