@@ -5,4 +5,14 @@ __pycache__/
 .idea
 whatsapp/auth/
 node_modules/
+# Archivos temporales de media
+media/temp/
 
+# Sesión de WhatsApp (MUY importante no subir esto)
+whatsapp/session/
+
+# Base de datos backup
+bot_backup.db
+
+# Opcional: logs o basura futura
+*.log

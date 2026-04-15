@@ -1,106 +1,928 @@
 <!DOCTYPE html>
-<html>
+<html lang="es">
 <head>
-    <meta charset="utf-8">
-    <title>🤖 Bot Moderador</title>
-    <style>
-        body {
-            font-family: sans-serif;
-            background: #111;
-            color: #eee;
-            padding: 20px;
-        }
-        .service {
-            border: 1px solid #333;
-            padding: 10px;
-            margin-bottom: 10px;
-        }
-        .active { color: #4caf50; }
-        .inactive { color: #f44336; }
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bot Moderador</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-        button {
-            margin: 3px;
-            padding: 6px 10px;
-            cursor: pointer;
-        }
+  :root {
+    --bg: #0e0e10;
+    --bg2: #18181b;
+    --bg3: #1f1f23;
+    --border: #2a2a2e;
+    --border2: #3a3a3e;
+    --text: #efeff1;
+    --text2: #adadb8;
+    --text3: #6b6b78;
+    --green: #22c55e;
+    --green-dim: #15803d22;
+    --red: #ef4444;
+    --red-dim: #dc262622;
+    --yellow: #f59e0b;
+    --yellow-dim: #d9770622;
+    --blue: #3b82f6;
+    --blue-dim: #1d4ed822;
+    --purple: #a855f7;
+    --purple-dim: #7e22ce22;
+  }
 
-        pre {
-            background: #000;
-            padding: 10px;
-            max-height: 200px;
-            overflow-y: auto;
-            font-size: 12px;
-        }
+  body {
+    font-family: 'Courier New', monospace;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
 
-        .power {
-            margin-top: 30px;
-            border-top: 1px solid #333;
-            padding-top: 10px;
-        }
-    </style>
+  /* ── TOPBAR ── */
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 12px; }
+  .wa-icon {
+    width: 28px; height: 28px; border-radius: 6px;
+    background: #25D366;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .wa-icon svg { width: 16px; height: 16px; fill: white; }
+  .topbar-title { font-size: 14px; font-weight: bold; letter-spacing: 0.05em; color: var(--text); }
+  .topbar-right { display: flex; align-items: center; gap: 12px; }
+  .conn-badge {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--text3);
+    background: var(--bg3);
+    padding: 4px 10px; border-radius: 20px;
+    border: 1px solid var(--border);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--yellow); }
+  .dot.online { background: var(--green); }
+  .dot.offline { background: var(--red); }
+  .btn-refresh {
+    background: var(--bg3); border: 1px solid var(--border2);
+    color: var(--text2); font-size: 11px; padding: 5px 12px;
+    border-radius: 6px; cursor: pointer; font-family: inherit;
+    transition: all 0.15s;
+  }
+  .btn-refresh:hover { background: var(--border); color: var(--text); }
+
+  /* ── LAYOUT ── */
+  .page { padding: 20px; max-width: 1200px; margin: 0 auto; }
+
+  /* ── STATS ROW ── */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+  .stat {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .stat-label { font-size: 10px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 6px; }
+  .stat-value { font-size: 28px; font-weight: bold; line-height: 1; }
+  .stat-sub { font-size: 10px; color: var(--text3); margin-top: 4px; }
+  .val-green { color: var(--green); }
+  .val-red { color: var(--red); }
+  .val-yellow { color: var(--yellow); }
+  .val-blue { color: var(--blue); }
+
+  /* ── MAIN GRID ── */
+  .main-grid {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    gap: 16px;
+  }
+
+  /* ── PANELS ── */
+  .panel {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .panel-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg3);
+  }
+  .panel-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text2); }
+  .panel-badge {
+    font-size: 10px; padding: 2px 8px; border-radius: 10px;
+    background: var(--border); color: var(--text2);
+  }
+
+  /* ── SERVICES ── */
+  .service-item {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px;
+  }
+  .service-item:last-child { border-bottom: none; }
+  .svc-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .svc-dot.active { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .svc-dot.inactive { background: var(--red); }
+  .svc-dot.activating { background: var(--yellow); }
+  .svc-info { flex: 1; }
+  .svc-name { font-size: 13px; color: var(--text); margin-bottom: 2px; }
+  .svc-status { font-size: 10px; color: var(--text3); }
+  .svc-actions { display: flex; gap: 4px; }
+  .btn-svc {
+    font-size: 10px; padding: 4px 9px; border-radius: 5px;
+    border: 1px solid var(--border2); background: var(--bg);
+    color: var(--text2); cursor: pointer; font-family: inherit;
+    transition: all 0.15s;
+  }
+  .btn-svc:hover { background: var(--bg3); color: var(--text); }
+  .btn-svc.start:hover { border-color: var(--green); color: var(--green); }
+  .btn-svc.stop:hover { border-color: var(--red); color: var(--red); }
+  .btn-svc.restart:hover { border-color: var(--yellow); color: var(--yellow); }
+  .btn-svc.logs:hover { border-color: var(--blue); color: var(--blue); }
+  .btn-svc.active-btn { border-color: var(--blue); color: var(--blue); background: var(--blue-dim); }
+
+  /* ── LOGS ── */
+  .log-block {
+    display: none;
+    padding: 0 14px 12px;
+  }
+  .log-block.open { display: block; }
+  pre.log-content {
+    background: #000;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 10px;
+    line-height: 1.6;
+    color: #a0f0a0;
+    max-height: 220px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  /* ── CASES ── */
+  .filter-row {
+    display: flex; gap: 5px; padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .fbtn {
+    font-size: 10px; padding: 3px 10px; border-radius: 10px;
+    border: 1px solid var(--border2); background: transparent;
+    color: var(--text3); cursor: pointer; font-family: inherit;
+    transition: all 0.15s;
+  }
+  .fbtn:hover { color: var(--text2); border-color: var(--border2); }
+  .fbtn.on { background: var(--bg3); border-color: var(--border2); color: var(--text); }
+
+  .case-list { max-height: 420px; overflow-y: auto; }
+  .case-item {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .case-item:hover { background: var(--bg3); }
+  .case-item.sel { background: var(--blue-dim); border-left: 2px solid var(--blue); }
+  .case-item:last-child { border-bottom: none; }
+  .case-row1 { display: flex; justify-content: space-between; margin-bottom: 3px; }
+  .case-user { font-size: 12px; color: var(--text); }
+  .case-time { font-size: 10px; color: var(--text3); }
+  .case-content {
+    font-size: 11px; color: var(--text2);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    margin-bottom: 5px;
+  }
+  .tags { display: flex; gap: 4px; flex-wrap: wrap; }
+  .tag {
+    font-size: 9px; padding: 2px 6px; border-radius: 6px;
+    border: 1px solid; font-weight: bold; letter-spacing: 0.04em;
+  }
+  .tag-sale { color: #fbbf24; border-color: #92400e44; background: #92400e22; }
+  .tag-image { color: var(--purple); border-color: #7e22ce44; background: var(--purple-dim); }
+  .tag-appeal { color: var(--blue); border-color: #1d4ed844; background: var(--blue-dim); }
+  .tag-s1 { color: var(--yellow); border-color: #d9770644; background: var(--yellow-dim); }
+  .tag-s2 { color: #f97316; border-color: #c2410c44; background: #c2410c22; }
+  .tag-s3 { color: var(--red); border-color: #dc262644; background: var(--red-dim); }
+  .empty-msg { padding: 32px; text-align: center; color: var(--text3); font-size: 12px; }
+
+  /* ── DETAIL ── */
+  .tabs { display: flex; border-bottom: 1px solid var(--border); }
+  .tabBtn {
+    font-size: 10px; padding: 8px 14px; cursor: pointer;
+    color: var(--text3); border-bottom: 2px solid transparent;
+    background: none; border-top: none; border-left: none; border-right: none;
+    font-family: inherit; text-transform: uppercase; letter-spacing: 0.08em;
+    transition: all 0.15s; margin-bottom: -1px;
+  }
+  .tabBtn:hover { color: var(--text2); }
+  .tabBtn.on { color: var(--text); border-bottom-color: var(--blue); }
+
+  .detail-body { padding: 14px; max-height: 320px; overflow-y: auto; }
+  .d-section { margin-bottom: 14px; }
+  .d-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text3); margin-bottom: 6px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+  .d-row { display: flex; justify-content: space-between; margin-bottom: 4px; }
+  .d-key { font-size: 11px; color: var(--text3); }
+  .d-val { font-size: 11px; color: var(--text); font-weight: bold; text-align: right; max-width: 55%; word-break: break-all; }
+  .msg-bubble {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--yellow);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 11px; color: var(--text2); line-height: 1.5;
+  }
+  .case-image {
+    width: 100%;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: opacity 0.15s;
+    display: block;
+    max-height: 220px;
+    object-fit: cover;
+  }
+  .case-image:hover { opacity: 0.85; }
+  .img-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.92);
+    z-index: 999;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  .img-overlay.open { display: flex; }
+  .img-overlay img { max-width: 90vw; max-height: 90vh; border-radius: 8px; }
+  .img-loading {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 20px;
+    text-align: center;
+    font-size: 11px;
+    color: var(--text3);
+  }
+  .detail-empty { padding: 40px 14px; text-align: center; color: var(--text3); font-size: 11px; line-height: 1.8; }
+
+  .action-bar { padding: 10px 14px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
+  .btn-action {
+    width: 100%; padding: 7px 12px; border-radius: 6px;
+    font-size: 11px; font-family: inherit; cursor: pointer;
+    border: 1px solid var(--border2); background: var(--bg);
+    color: var(--text2); text-align: left;
+    transition: all 0.15s;
+  }
+  .btn-action:hover { background: var(--bg3); color: var(--text); }
+  .btn-action.ok:hover { border-color: var(--green); color: var(--green); background: var(--green-dim); }
+  .btn-action.warn:hover { border-color: var(--yellow); color: var(--yellow); background: var(--yellow-dim); }
+  .btn-action.danger:hover { border-color: var(--red); color: var(--red); background: var(--red-dim); }
+
+  /* ── HISTORY ── */
+  .hist-item { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .hist-item:last-child { border-bottom: none; }
+  .hist-row1 { display: flex; justify-content: space-between; margin-bottom: 2px; }
+  .hist-action { font-size: 11px; color: var(--text); }
+  .hist-time { font-size: 10px; color: var(--text3); }
+  .hist-detail { font-size: 10px; color: var(--text2); }
+  .hist-mod { font-size: 10px; color: var(--text3); margin-top: 2px; }
+
+  /* ── MODERATORS ── */
+  .mod-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+  }
+  .mod-item:last-child { border-bottom: none; }
+  .mod-avatar {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: var(--blue-dim); border: 1px solid var(--blue);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: bold; color: var(--blue); flex-shrink: 0;
+  }
+  .mod-phone { font-size: 12px; color: var(--text); }
+  .mod-lid { font-size: 10px; color: var(--text3); margin-top: 1px; }
+  .mod-active { margin-left: auto; font-size: 10px; color: var(--green); }
+  .mod-inactive { margin-left: auto; font-size: 10px; color: var(--red); }
+
+  /* ── POWER ── */
+  .power-row {
+    display: flex; gap: 8px; padding: 12px 14px;
+  }
+  .btn-power {
+    flex: 1; padding: 8px; border-radius: 6px;
+    font-size: 11px; font-family: inherit; cursor: pointer;
+    border: 1px solid var(--border2); background: var(--bg);
+    color: var(--text2); transition: all 0.15s;
+  }
+  .btn-power.reboot:hover { border-color: var(--yellow); color: var(--yellow); background: var(--yellow-dim); }
+  .btn-power.shutdown:hover { border-color: var(--red); color: var(--red); background: var(--red-dim); }
+
+  /* ── TOAST ── */
+  #toast {
+    position: fixed; bottom: 20px; right: 20px;
+    background: var(--bg2); border: 1px solid var(--border2);
+    border-radius: 8px; padding: 10px 16px;
+    font-size: 12px; color: var(--text);
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.2s;
+    z-index: 999; max-width: 280px;
+  }
+  #toast.show { opacity: 1; }
+  #toast.ok { border-color: var(--green); color: var(--green); }
+  #toast.err { border-color: var(--red); color: var(--red); }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 800px) {
+    .stats-row { grid-template-columns: repeat(2, 1fr); }
+    .main-grid { grid-template-columns: 1fr; }
+  }
+</style>
 </head>
 <body>
 
-<h1>🤖 Bot Moderador</h1>
-
-<div id="services"></div>
-
-<div class="power">
-    <h2>⚡ Sistema</h2>
-    <button onclick="reboot()">🔄 Reiniciar Raspberry</button>
-    <button onclick="shutdown()">⏻ Apagar Raspberry</button>
+<div class="topbar">
+  <div class="topbar-left">
+    <div class="wa-icon">
+      <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12 0C5.373 0 0 5.373 0 12c0 2.012.525 3.9 1.437 5.545L.02 23.117a.75.75 0 00.924.908l5.438-1.748A11.942 11.942 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.75a9.713 9.713 0 01-4.943-1.348l-.355-.212-3.683 1.183 1.028-3.767-.231-.374A9.709 9.709 0 012.25 12C2.25 6.615 6.615 2.25 12 2.25S21.75 6.615 21.75 12 17.385 21.75 12 21.75z"/></svg>
+    </div>
+    <span class="topbar-title">BOT MODERADOR</span>
+  </div>
+  <div class="topbar-right">
+    <div class="conn-badge">
+      <span class="dot" id="connDot"></span>
+      <span id="connText">conectando...</span>
+    </div>
+    <button class="btn-refresh" onclick="loadAll()">↺ actualizar</button>
+  </div>
 </div>
 
+<div class="page">
+
+  <!-- STATS -->
+  <div class="stats-row">
+    <div class="stat">
+      <div class="stat-label">casos pendientes</div>
+      <div class="stat-value val-yellow" id="sPending">—</div>
+      <div class="stat-sub" id="sPendingSub">cargando...</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">usuarios totales</div>
+      <div class="stat-value val-blue" id="sUsers">—</div>
+      <div class="stat-sub" id="sUsersSub">cargando...</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">mensajes marcados</div>
+      <div class="stat-value val-yellow" id="sFlagged">—</div>
+      <div class="stat-sub" id="sFlaggedSub">cargando...</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">moderadores</div>
+      <div class="stat-value val-green" id="sMods">—</div>
+      <div class="stat-sub" id="sModsSub">cargando...</div>
+    </div>
+  </div>
+
+  <div class="main-grid">
+
+    <!-- IZQUIERDA: servicios + casos -->
+    <div style="display:flex;flex-direction:column;gap:16px;">
+
+      <!-- SERVICIOS -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">servicios del sistema</span>
+          <span class="panel-badge" id="svcBadge">cargando...</span>
+        </div>
+        <div id="serviceList">
+          <div class="empty-msg">Cargando servicios...</div>
+        </div>
+        <div class="power-row">
+          <button class="btn-power reboot" onclick="doReboot()">↺ Reiniciar Raspberry</button>
+          <button class="btn-power shutdown" onclick="doShutdown()">⏻ Apagar Raspberry</button>
+        </div>
+      </div>
+
+      <!-- CASOS -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">casos de moderación</span>
+          <span class="panel-badge" id="caseBadge">0</span>
+        </div>
+        <div class="filter-row">
+          <button class="fbtn on" onclick="setFilter('pending',this)">Pendientes</button>
+          <button class="fbtn" onclick="setFilter('in_review',this)">En revisión</button>
+          <button class="fbtn" onclick="setFilter('resolved',this)">Resueltos</button>
+          <button class="fbtn" onclick="setFilter('all',this)">Todos</button>
+        </div>
+        <div class="case-list" id="caseList">
+          <div class="empty-msg">Cargando casos...</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- DERECHA: detalle + moderadores -->
+    <div style="display:flex;flex-direction:column;gap:16px;">
+
+      <!-- DETALLE DEL CASO -->
+      <div class="panel">
+        <div class="tabs">
+          <button class="tabBtn on" onclick="switchTab('detail',this)">Detalle</button>
+          <button class="tabBtn" onclick="switchTab('history',this)">Historial</button>
+        </div>
+        <div id="tabDetail">
+          <div class="detail-empty" id="detailEmpty">
+            Seleccioná un caso<br>para ver el detalle
+          </div>
+          <div id="detailContent" style="display:none;">
+            <div class="detail-body" id="detailBody"></div>
+            <div class="action-bar" id="actionBar"></div>
+          </div>
+        </div>
+        <div id="tabHistory" style="display:none;">
+          <div id="historyContent">
+            <div class="detail-empty">Seleccioná un caso primero</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- MODERADORES -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">moderadores</span>
+          <span class="panel-badge" id="modBadge">0</span>
+        </div>
+        <div id="modList">
+          <div class="empty-msg">Cargando...</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div class="img-overlay" id="imgOverlay" onclick="closeImg()">
+  <img id="imgFull" src="" alt="imagen del caso">
+</div>
+
+<div id="toast"></div>
+
 <script>
-async function loadServices() {
-    const res = await fetch("/status");
-    const services = await res.json();
-    const div = document.getElementById("services");
-    div.innerHTML = "";
+  const API_DASH = '';           // mismo servidor (8050)
+  const API_BOT  = 'http://192.168.0.103:8000'; // FastAPI del bot
+  const ADMIN    = '69634422268027';
 
-    services.forEach(s => {
-        const el = document.createElement("div");
-        el.className = "service";
-        el.innerHTML = `
-            <h3>${s.name}</h3>
-            <p>Estado: <span class="${s.status}">${s.status}</span></p>
-            <button onclick="serviceAction('${s.service}', 'start')">▶ Start</button>
-            <button onclick="serviceAction('${s.service}', 'stop')">⏹ Stop</button>
-            <button onclick="serviceAction('${s.service}', 'restart')">🔁 Restart</button>
-            <button onclick="loadLogs('${s.service}')">📜 Logs</button>
-            <pre id="logs-${s.service}"></pre>
+  let allCases = [];
+  let currentFilter = 'pending';
+  let selectedId = null;
+  let selectedCase = null;
+  let openLogService = null;
+  let currentTab = 'detail';
+
+  // ── TOAST ──────────────────────────────────────────
+  function toast(msg, type = '') {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast show ' + type;
+    clearTimeout(t._t);
+    t._t = setTimeout(() => t.className = 'toast', 2800);
+  }
+
+  // ── CONEXIÓN ───────────────────────────────────────
+  function setConn(state) {
+    const dot  = document.getElementById('connDot');
+    const text = document.getElementById('connText');
+    if (state === 'ok')      { dot.className = 'dot online';  text.textContent = 'conectado'; }
+    else if (state === 'err') { dot.className = 'dot offline'; text.textContent = 'sin conexión'; }
+    else                     { dot.className = 'dot';         text.textContent = 'conectando...'; }
+  }
+
+  // ── TIEMPO ─────────────────────────────────────────
+  function ago(d) {
+    if (!d) return '—';
+    const s = Math.floor((Date.now() - new Date(d)) / 1000);
+    if (s < 60)   return 'hace ' + s + 's';
+    if (s < 3600) return 'hace ' + Math.floor(s/60) + 'm';
+    if (s < 86400)return 'hace ' + Math.floor(s/3600) + 'h';
+    return 'hace ' + Math.floor(s/86400) + 'd';
+  }
+
+  // ══════════════════════════════════════════════════
+  // SERVICIOS
+  // ══════════════════════════════════════════════════
+  async function loadServices() {
+    try {
+      const res = await fetch(API_DASH + '/status');
+      const svcs = await res.json();
+      setConn('ok');
+
+      const active = svcs.filter(s => s.status === 'active').length;
+      document.getElementById('svcBadge').textContent =
+        active + '/' + svcs.length + ' activos';
+
+      document.getElementById('serviceList').innerHTML = svcs.map(s => {
+        const isActive = s.status === 'active';
+        const dotClass = isActive ? 'active' : s.status === 'activating' ? 'activating' : 'inactive';
+        const logsOpen = openLogService === s.service;
+        return `
+          <div class="service-item">
+            <span class="svc-dot ${dotClass}"></span>
+            <div class="svc-info">
+              <div class="svc-name">${s.name}</div>
+              <div class="svc-status">${s.service} · ${s.status}</div>
+            </div>
+            <div class="svc-actions">
+              <button class="btn-svc start"   onclick="svcAct('${s.service}','start')">▶</button>
+              <button class="btn-svc stop"    onclick="svcAct('${s.service}','stop')">⏹</button>
+              <button class="btn-svc restart" onclick="svcAct('${s.service}','restart')">↺</button>
+              <button class="btn-svc logs ${logsOpen ? 'active-btn' : ''}"
+                      onclick="toggleLogs('${s.service}')">logs</button>
+            </div>
+          </div>
+          <div class="log-block ${logsOpen ? 'open' : ''}" id="log-${s.service}">
+            <pre class="log-content" id="logpre-${s.service}">Cargando...</pre>
+          </div>
         `;
-        div.appendChild(el);
+      }).join('');
+
+      // si hay logs abiertos, recargarlos
+      if (openLogService) fetchLogs(openLogService);
+
+    } catch(e) {
+      setConn('err');
+    }
+  }
+
+  async function svcAct(svc, action) {
+    try {
+      await fetch(API_DASH + `/service/${svc}/${action}`, { method: 'POST' });
+      toast(svc.replace('.service','') + ' → ' + action, 'ok');
+      setTimeout(loadServices, 1200);
+    } catch(e) {
+      toast('Error al ejecutar acción', 'err');
+    }
+  }
+
+  async function fetchLogs(svc) {
+    try {
+      const res = await fetch(API_DASH + `/logs/${svc}`);
+      const data = await res.json();
+      const el = document.getElementById('logpre-' + svc);
+      if (el) {
+        el.textContent = data.logs || '(sin logs)';
+        el.scrollTop = el.scrollHeight;
+      }
+    } catch(e) {}
+  }
+
+  function toggleLogs(svc) {
+    if (openLogService === svc) {
+      openLogService = null;
+    } else {
+      openLogService = svc;
+    }
+    loadServices();
+  }
+
+  // ══════════════════════════════════════════════════
+  // STATS + USUARIOS
+  // ══════════════════════════════════════════════════
+  async function loadStats() {
+    try {
+      const res = await fetch(API_BOT + '/users');
+      if (!res.ok) return;
+      const users = await res.json();
+      const withStrikes = users.filter(u => u.strikes > 0).length;
+      const banned = users.filter(u => u.status === 'banned' || u.status === 'expelled').length;
+      document.getElementById('sUsers').textContent = users.length;
+      document.getElementById('sUsersSub').textContent = withStrikes + ' con strikes · ' + banned + ' baneados';
+    } catch(e) {
+      document.getElementById('sUsers').textContent = '—';
+      document.getElementById('sUsersSub').textContent = 'API bot no disponible';
+    }
+  }
+
+  // ══════════════════════════════════════════════════
+  // CASOS
+  // ══════════════════════════════════════════════════
+  async function loadCases() {
+    try {
+      const res = await fetch(API_BOT + '/dashboard/cases');
+      if (!res.ok) throw new Error('no endpoint');
+      const data = await res.json();
+      allCases = data.cases || [];
+    } catch(e) {
+      // endpoint aún no existe — datos de ejemplo
+      allCases = [
+        { id:1, type:'infringement', status:'pending', priority:1,
+          created_at: new Date(Date.now()-300000).toISOString(),
+          _userName:'Carlos M.', _userPhone:'549291234567',
+          _content:'Vendo bicicleta rod 26 casi nueva, precio a tratar', _strikes:1 },
+        { id:2, type:'image_review', status:'pending', priority:2,
+          created_at: new Date(Date.now()-120000).toISOString(),
+          _userName:'Ana García', _userPhone:'549297654321',
+          _content:'Imagen sospechosa enviada al grupo', _strikes:0 },
+        { id:3, type:'appeal', status:'pending', priority:0,
+          created_at: new Date(Date.now()-600000).toISOString(),
+          _userName:'Pedro López', _userPhone:'549299876543',
+          _content:'Apelación: yo no estaba vendiendo nada', _strikes:2 },
+        { id:4, type:'infringement', status:'resolved', priority:1,
+          created_at: new Date(Date.now()-3600000).toISOString(),
+          resolution:'ignored',
+          _userName:'Laura Torres', _userPhone:'549293456789',
+          _content:'Oferta especial en zapatos importados', _strikes:0 },
+      ];
+    }
+
+    const pending   = allCases.filter(c => c.status === 'pending').length;
+    const appeals   = allCases.filter(c => c.type === 'appeal' && c.status === 'pending').length;
+    const flagged   = allCases.length;
+    const inReview  = allCases.filter(c => c.status === 'in_review').length;
+
+    document.getElementById('sPending').textContent = pending;
+    document.getElementById('sPending').className = 'stat-value ' + (pending > 5 ? 'val-red' : pending > 2 ? 'val-yellow' : 'val-green');
+    document.getElementById('sPendingSub').textContent = inReview + ' en revisión · ' + appeals + ' apelaciones';
+    document.getElementById('sFlagged').textContent = flagged;
+    document.getElementById('sFlaggedSub').textContent = 'total de casos registrados';
+
+    filterAndRender();
+  }
+
+  function filterAndRender() {
+    let list = currentFilter === 'all'
+      ? [...allCases]
+      : allCases.filter(c => c.status === currentFilter);
+
+    list.sort((a,b) => {
+      if (a.type === 'appeal' && b.type !== 'appeal') return -1;
+      if (b.type === 'appeal' && a.type !== 'appeal') return 1;
+      return (a.priority||3) - (b.priority||3);
     });
-}
 
-async function serviceAction(service, action) {
-    await fetch(`/service/${service}/${action}`, { method: "POST" });
-    setTimeout(loadServices, 1000);
-}
+    document.getElementById('caseBadge').textContent = list.length;
 
-async function loadLogs(service) {
-    const res = await fetch(`/logs/${service}`);
-    const data = await res.json();
-    document.getElementById(`logs-${service}`).textContent = data.logs;
-}
-
-async function reboot() {
-    if (confirm("¿Reiniciar Raspberry?")) {
-        await fetch("/power/reboot", { method: "POST" });
+    if (!list.length) {
+      const msgs = { pending:'sin casos pendientes ✓', in_review:'ninguno en revisión', resolved:'sin resueltos', all:'sin casos' };
+      document.getElementById('caseList').innerHTML = `<div class="empty-msg">${msgs[currentFilter]||'sin casos'}</div>`;
+      return;
     }
-}
 
-async function shutdown() {
-    if (confirm("¿Apagar Raspberry?")) {
-        await fetch("/power/shutdown", { method: "POST" });
+    document.getElementById('caseList').innerHTML = list.map(c => {
+      const tags = [];
+      if (c.type === 'appeal')        tags.push('<span class="tag tag-appeal">apelación</span>');
+      else if (c.type === 'image_review') tags.push('<span class="tag tag-image">imagen</span>');
+      else                             tags.push('<span class="tag tag-sale">venta</span>');
+      if (c._strikes === 1) tags.push('<span class="tag tag-s1">1 strike</span>');
+      else if (c._strikes === 2) tags.push('<span class="tag tag-s2">2 strikes</span>');
+      else if (c._strikes >= 3) tags.push('<span class="tag tag-s3">3 strikes</span>');
+
+      return `
+        <div class="case-item ${selectedId === c.id ? 'sel' : ''}" onclick="selectCase(${c.id})">
+          <div class="case-row1">
+            <span class="case-user">${c._userName || c._userPhone || '—'}</span>
+            <span class="case-time">${ago(c.created_at)}</span>
+          </div>
+          <div class="case-content">${c._content || '(sin contenido)'}</div>
+          <div class="tags">${tags.join('')}</div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function setFilter(f, btn) {
+    currentFilter = f;
+    document.querySelectorAll('.fbtn').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
+    filterAndRender();
+  }
+
+  function selectCase(id) {
+    selectedId   = id;
+    selectedCase = allCases.find(c => c.id === id);
+    filterAndRender();
+    renderDetail(selectedCase);
+    if (currentTab === 'history') renderHistory(selectedCase);
+  }
+
+  // ══════════════════════════════════════════════════
+  // DETALLE
+  // ══════════════════════════════════════════════════
+  function openImg(url) {
+    document.getElementById('imgFull').src = url;
+    document.getElementById('imgOverlay').classList.add('open');
+  }
+  function closeImg() {
+    document.getElementById('imgOverlay').classList.remove('open');
+  }
+
+  function renderDetail(c) {
+    document.getElementById('detailEmpty').style.display   = 'none';
+    document.getElementById('detailContent').style.display = 'block';
+
+    const strikeColor = c._strikes >= 3 ? 'val-red' : c._strikes >= 2 ? 'val-yellow' : 'val-green';
+
+    // bloque de contenido — texto o imagen
+    let contentBlock = '';
+    if (c.type === 'image_review' && c._mediaFilename) {
+      const imgUrl = `${API_BOT}/media/images/${c._mediaFilename}?phone=${ADMIN}`;
+      contentBlock = `
+        <div class="d-label">imagen sospechosa</div>
+        <img class="case-image" src="${imgUrl}"
+             onclick="openImg('${imgUrl}')"
+             onerror="this.parentElement.innerHTML='<div class=\\'img-loading\\'>No se pudo cargar la imagen<br><small>${c._mediaFilename}</small></div>'"
+             alt="imagen del caso">
+        <div style="font-size:10px;color:var(--text3);margin-top:4px;">click para ampliar</div>
+      `;
+    } else {
+      contentBlock = `
+        <div class="d-label">contenido</div>
+        <div class="msg-bubble">${c._content || '(sin contenido disponible)'}</div>
+      `;
     }
-}
 
-loadServices();
-setInterval(loadServices, 10000);
+    document.getElementById('detailBody').innerHTML = `
+      <div class="d-section">
+        <div class="d-label">caso #${c.id}</div>
+        <div class="d-row"><span class="d-key">tipo</span>     <span class="d-val">${c.type}</span></div>
+        <div class="d-row"><span class="d-key">estado</span>   <span class="d-val">${c.status}</span></div>
+        <div class="d-row"><span class="d-key">prioridad</span><span class="d-val">${c.priority}</span></div>
+        <div class="d-row"><span class="d-key">creado</span>   <span class="d-val">${ago(c.created_at)}</span></div>
+        ${c.resolution ? `<div class="d-row"><span class="d-key">resolución</span><span class="d-val">${c.resolution}</span></div>` : ''}
+      </div>
+      <div class="d-section">
+        <div class="d-label">usuario</div>
+        <div class="d-row"><span class="d-key">nombre</span>  <span class="d-val">${c._userName || '—'}</span></div>
+        <div class="d-row"><span class="d-key">teléfono</span><span class="d-val">+${c._userPhone || '—'}</span></div>
+        <div class="d-row"><span class="d-key">strikes</span> <span class="d-val ${strikeColor}">${c._strikes}/3</span></div>
+      </div>
+      <div class="d-section">${contentBlock}</div>
+    `;
+
+    let actions = '';
+    if (c.status === 'pending' || c.status === 'in_review') {
+      if (c.type === 'appeal') {
+        actions = `
+          <button class="btn-action ok"   onclick="actCase(${c.id},'accept_appeal')">✓ aceptar apelación (quitar 1 strike)</button>
+          <button class="btn-action warn" onclick="actCase(${c.id},'reject_appeal')">✗ rechazar apelación</button>
+        `;
+      } else {
+        actions = `
+          <button class="btn-action ok"   onclick="actCase(${c.id},'ignore')">✓ ignorar (no es infracción)</button>
+          <button class="btn-action warn" onclick="actCase(${c.id},'delete')">⊠ borrar mensaje + 1 strike</button>
+          ${c._strikes >= 2 ? `<button class="btn-action danger" onclick="actCase(${c.id},'ban')">⊘ expulsar (3er strike)</button>` : ''}
+        `;
+      }
+    } else {
+      actions = `<div style="font-size:11px;color:var(--text3);padding:4px 0;">caso ${c.status}${c.resolution?' — '+c.resolution:''}</div>`;
+    }
+    document.getElementById('actionBar').innerHTML = actions;
+  }
+
+  async function actCase(caseId, action) {
+    const labels = {
+      ignore:'ignorado', delete:'mensaje borrado + strike',
+      ban:'usuario expulsado', accept_appeal:'apelación aceptada',
+      reject_appeal:'apelación rechazada'
+    };
+    try {
+      const res = await fetch(API_BOT + '/dashboard/decide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: ADMIN, case_id: caseId, action, note: 'Desde dashboard LAN' })
+      });
+      if (res.ok) {
+        toast('Caso #' + caseId + ' → ' + (labels[action]||action), 'ok');
+        const c = allCases.find(x => x.id === caseId);
+        if (c) { c.status = 'resolved'; c.resolution = action; }
+        selectedId = null;
+        selectedCase = null;
+        document.getElementById('detailEmpty').style.display   = 'flex';
+        document.getElementById('detailContent').style.display = 'none';
+        filterAndRender();
+        loadStats();
+      } else {
+        const err = await res.json();
+        toast('Error: ' + (err.detail || 'desconocido'), 'err');
+      }
+    } catch(e) {
+      toast('Sin conexión con la API del bot (puerto 8000)', 'err');
+    }
+  }
+
+  // ══════════════════════════════════════════════════
+  // HISTORIAL
+  // ══════════════════════════════════════════════════
+  function renderHistory(c) {
+    if (!c) return;
+    const items = [
+      { action: 'Caso creado', detail: c.type === 'infringement' ? 'Keyword de venta detectada' : c.type === 'image_review' ? 'Imagen enviada al grupo' : 'Apelación enviada', time: c.created_at, mod: 'Sistema' },
+    ];
+    if (c.status !== 'pending') {
+      items.push({ action: c.resolution || 'Resuelto', detail: 'Caso procesado', time: new Date().toISOString(), mod: c.resolved_by || 'Moderador' });
+    }
+    document.getElementById('historyContent').innerHTML = items.map(h => `
+      <div class="hist-item">
+        <div class="hist-row1">
+          <span class="hist-action">${h.action}</span>
+          <span class="hist-time">${ago(h.time)}</span>
+        </div>
+        <div class="hist-detail">${h.detail}</div>
+        <div class="hist-mod">por ${h.mod}</div>
+      </div>
+    `).join('');
+  }
+
+  function switchTab(tab, el) {
+    currentTab = tab;
+    document.querySelectorAll('.tabBtn').forEach(b => b.classList.remove('on'));
+    el.classList.add('on');
+    document.getElementById('tabDetail').style.display  = tab === 'detail'  ? 'block' : 'none';
+    document.getElementById('tabHistory').style.display = tab === 'history' ? 'block' : 'none';
+    if (tab === 'history' && selectedCase) renderHistory(selectedCase);
+  }
+
+  // ══════════════════════════════════════════════════
+  // MODERADORES
+  // ══════════════════════════════════════════════════
+  async function loadModerators() {
+    try {
+      const res = await fetch(API_BOT + '/dashboard/moderators');
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      const mods = data.moderators || [];
+      renderMods(mods);
+      const active = mods.filter(m => m.active).length;
+      document.getElementById('sMods').textContent = active;
+      document.getElementById('sModsSub').textContent = mods.length + ' registrados';
+      document.getElementById('modBadge').textContent = mods.length;
+    } catch(e) {
+      const fallback = [
+        { phone: '2936417222', lid: '69634422268027', active: true },
+        { phone: '2954662475', lid: null, active: true },
+      ];
+      renderMods(fallback);
+      document.getElementById('sMods').textContent = '2';
+      document.getElementById('sModsSub').textContent = 'ejemplo — agregá el endpoint';
+      document.getElementById('modBadge').textContent = '2';
+    }
+  }
+
+  function renderMods(mods) {
+    if (!mods.length) {
+      document.getElementById('modList').innerHTML = '<div class="empty-msg">Sin moderadores</div>';
+      return;
+    }
+    document.getElementById('modList').innerHTML = mods.map(m => {
+      const init = m.phone.slice(-4,-2).toUpperCase();
+      return `
+        <div class="mod-item">
+          <div class="mod-avatar">${init}</div>
+          <div>
+            <div class="mod-phone">+${m.phone}</div>
+            <div class="mod-lid">${m.lid ? 'LID: ' + m.lid.slice(0,10) + '...' : 'LID pendiente (que escriba "estoy")'}</div>
+          </div>
+          <span class="${m.active ? 'mod-active' : 'mod-inactive'}">${m.active ? '● activo' : '○ inactivo'}</span>
+        </div>
+      `;
+    }).join('');
+  }
+
+  // ══════════════════════════════════════════════════
+  // POWER
+  // ══════════════════════════════════════════════════
+  async function doReboot() {
+    if (!confirm('¿Reiniciar la Raspberry Pi?')) return;
+    await fetch(API_DASH + '/power/reboot', { method: 'POST' });
+    toast('Reiniciando...', 'ok');
+  }
+
+  async function doShutdown() {
+    if (!confirm('¿Apagar la Raspberry Pi?')) return;
+    await fetch(API_DASH + '/power/shutdown', { method: 'POST' });
+    toast('Apagando...', 'ok');
+  }
+
+  // ══════════════════════════════════════════════════
+  // INIT
+  // ══════════════════════════════════════════════════
+  async function loadAll() {
+    await Promise.all([loadServices(), loadStats(), loadCases(), loadModerators()]);
+  }
+
+  loadAll();
+  setInterval(loadAll, 15000);
 </script>
-
 </body>
 </html>
-

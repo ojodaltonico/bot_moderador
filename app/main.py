@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from datetime import datetime
 import os
@@ -14,6 +15,12 @@ from app.utils.auth import is_moderator
 from fastapi.responses import FileResponse
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 Base.metadata.create_all(bind=engine)
 
@@ -1272,3 +1279,130 @@ def get_case_media(case_id: int, phone: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="file not found")
 
     return FileResponse(path, media_type="image/jpeg", filename=message.media_filename)
+
+@app.get("/dashboard/cases")
+def dashboard_cases(db: Session = Depends(get_db)):
+    cases = db.query(Case).order_by(Case.created_at.desc()).limit(100).all()
+    result = []
+    for c in cases:
+        msg = db.query(Message).filter(Message.id == c.message_id).first()
+        user = db.query(User).filter(User.id == msg.user_id).first() if msg else None
+        result.append({
+            "id": c.id,
+            "type": c.type,
+            "status": c.status,
+            "priority": c.priority,
+            "resolution": c.resolution,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+            "_userPhone": user.real_phone or user.phone if user else None,
+            "_userName": user.name if user else None,
+            "_strikes": user.strikes if user else 0,
+            "_mediaFilename": msg.media_filename if msg else None,
+            "_content": (
+                msg.content[:100] if msg and msg.message_type == "text" and msg.content
+                else "Imagen sospechosa" if msg and msg.message_type == "image"
+                else c.note or ""
+            )
+        })
+    return {"cases": result}
+
+
+@app.get("/dashboard/moderators")
+def dashboard_moderators(db: Session = Depends(get_db)):
+    mods = db.query(Moderator).all()
+    return {
+        "moderators": [
+            {"phone": m.phone, "lid": m.lid, "active": m.active}
+            for m in mods
+        ]
+    }
+
+
+@app.post("/dashboard/decide")
+def dashboard_decide(payload: dict, db: Session = Depends(get_db)):
+    case_id = payload.get("case_id")
+    action  = payload.get("action")
+    note    = payload.get("note", "Desde dashboard LAN")
+
+    case = db.query(Case).filter(Case.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="caso no encontrado")
+
+    message = db.query(Message).filter(Message.id == case.message_id).first()
+    user    = db.query(User).filter(User.id == message.user_id).first()
+
+    instructions = []
+
+    if case.type == "appeal":
+        if action == "accept_appeal":
+            if user.strikes > 0:
+                user.strikes -= 1
+            if user.status == "banned" and user.strikes < 3:
+                user.status = "active"
+            log = UserAction(
+                user_id=user.id, case_id=case.id,
+                action="strike_removed", note="Apelación aceptada desde dashboard",
+                moderator_phone=ADMIN_PHONE
+            )
+            db.add(log)
+            instructions.append({"send_message": True, "to": user.phone,
+                "text": f"✅ Tu apelación fue aceptada. Ahora tenés {user.strikes} strike(s)."})
+
+        elif action == "reject_appeal":
+            instructions.append({"send_message": True, "to": user.phone,
+                "text": "❌ Tu apelación fue rechazada."})
+
+    else:
+        if action == "ignore":
+            pass
+
+        elif action == "delete":
+            message.deleted = True
+            user.strikes += 1
+            if user.strikes >= 3:
+                user.status = "banned"
+            log = UserAction(
+                user_id=user.id, case_id=case.id,
+                action="strike", note="Borrado desde dashboard",
+                moderator_phone=ADMIN_PHONE
+            )
+            db.add(log)
+            if message.whatsapp_message_key:
+                instructions.append({"delete_message": True,
+                    "message_key": message.whatsapp_message_key})
+
+        elif action == "ban":
+            user.strikes += 1
+            user.status = "banned"
+            log = UserAction(
+                user_id=user.id, case_id=case.id,
+                action="ban", note="Expulsado desde dashboard",
+                moderator_phone=ADMIN_PHONE
+            )
+            db.add(log)
+            if message.whatsapp_message_key:
+                instructions.append({"delete_message": True,
+                    "message_key": message.whatsapp_message_key})
+            if message.participant_jid:
+                instructions.append({"remove_user": True,
+                    "chat_id": message.chat_id,
+                    "participant_jid": message.participant_jid})
+
+    case.status     = "resolved"
+    case.resolution = action
+    case.resolved_by = str(ADMIN_PHONE)
+    case.resolved_at = datetime.now()
+    case.note        = note
+
+    if message.media_filename:
+        path = os.path.join(MEDIA_IMAGES_PATH, message.media_filename)
+        if os.path.exists(path):
+            os.remove(path)
+
+    db.commit()
+
+    return {
+        "ok": True,
+        "instructions": instructions,
+        "user": {"phone": user.phone, "strikes": user.strikes, "status": user.status}
+    }
