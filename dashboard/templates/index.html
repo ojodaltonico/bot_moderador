@@ -911,6 +911,9 @@
   // ══════════════════════════════════════════════════
   // MODERADORES
   // ══════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════
+  // MODERADORES (ya existe, la dejamos igual)
+  // ══════════════════════════════════════════════════
   async function loadModerators() {
     try {
       const res = await fetch(API_BOT + '/dashboard/moderators');
@@ -970,16 +973,30 @@
   }
 
   // ══════════════════════════════════════════════════
-  // INIT
+  // SWITCH TABS (CORREGIDO)
   // ══════════════════════════════════════════════════
-  async function loadAll() {
-    await Promise.all([loadServices(), loadStats(), loadCases(), loadModerators()]);
+  function switchTab(tab, el) {
+    currentTab = tab;
+    document.querySelectorAll('.tabBtn').forEach(b => b.classList.remove('on'));
+    el.classList.add('on');
+
+    // Mostrar/ocultar paneles
+    document.getElementById('tabDetail').style.display  = (tab === 'detail')  ? 'block' : 'none';
+    document.getElementById('tabHistory').style.display = (tab === 'history') ? 'block' : 'none';
+    document.getElementById('tabAI').style.display      = (tab === 'ai')      ? 'block' : 'none';
+
+    if (tab === 'history' && selectedCase) {
+      renderHistory(selectedCase);
+    }
+    if (tab === 'ai') {
+      loadAIConfig();
+      loadKnowledge();
+    }
   }
 
-  loadAll();
-  setInterval(loadAll, 15000);
-
-    // Cargar configuración IA al cambiar a la pestaña
+  // ══════════════════════════════════════════════════
+  // IA CONFIGURATION
+  // ══════════════════════════════════════════════════
   async function loadAIConfig() {
     try {
       const res = await fetch(API_BOT + '/admin/ai/config');
@@ -1007,23 +1024,28 @@
   }
 
   async function loadKnowledge() {
-    const res = await fetch(API_BOT + '/admin/knowledge');
-    const items = await res.json();
-    const html = items.map(k => `
-      <div class="know-item">
-        <div class="know-header">
-          <span class="know-key">${k.key}</span>
-          <span class="know-tags">${k.tags || ''}</span>
+    try {
+      const res = await fetch(API_BOT + '/admin/knowledge');
+      const items = await res.json();
+      const html = items.map(k => `
+        <div class="know-item">
+          <div class="know-header">
+            <span class="know-key">${k.key}</span>
+            <span class="know-tags">${k.tags || ''}</span>
+          </div>
+          <div class="know-content">${k.content.substring(0,100)}...</div>
+          <div class="know-actions">
+            <button class="btn-small" onclick="editKnowledge(${k.id}, '${k.key.replace(/'/g, "\\'")}', \`${k.content.replace(/`/g, '\\`')}\`, '${(k.tags||'').replace(/'/g, "\\'")}')">editar</button>
+            <button class="btn-small" onclick="deleteKnowledge(${k.id})">borrar</button>
+            <span style="margin-left:auto;font-size:9px;color:var(--text3);">${k.enabled?'✅':'❌'}</span>
+          </div>
         </div>
-        <div class="know-content">${k.content.substring(0,100)}...</div>
-        <div class="know-actions">
-          <button class="btn-small" onclick="editKnowledge(${k.id})">editar</button>
-          <button class="btn-small" onclick="deleteKnowledge(${k.id})">borrar</button>
-          <span style="margin-left:auto;font-size:9px;color:var(--text3);">${k.enabled?'✅':'❌'}</span>
-        </div>
-      </div>
-    `).join('');
-    document.getElementById('knowledgeList').innerHTML = html || '<div class="empty-msg">Sin conocimientos</div>';
+      `).join('');
+      document.getElementById('knowledgeList').innerHTML = html || '<div class="empty-msg">Sin conocimientos</div>';
+    } catch(e) {
+      console.error(e);
+      document.getElementById('knowledgeList').innerHTML = '<div class="empty-msg">Error al cargar conocimientos</div>';
+    }
   }
 
   function addKnowledge() {
@@ -1039,21 +1061,36 @@
     }).then(() => loadKnowledge());
   }
 
+  // Función para editar conocimiento
+  function editKnowledge(id, oldKey, oldContent, oldTags) {
+    const key = prompt('Clave:', oldKey);
+    if (key === null) return;
+    const content = prompt('Contenido:', oldContent);
+    if (content === null) return;
+    const tags = prompt('Tags (separados por coma):', oldTags);
+    if (tags === null) return;
+    fetch(API_BOT + '/admin/knowledge/' + id, {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({key, content, tags, enabled: true})
+    }).then(() => loadKnowledge());
+  }
+
   async function deleteKnowledge(id) {
     if(!confirm('¿Borrar este conocimiento?')) return;
     await fetch(API_BOT + '/admin/knowledge/' + id, {method:'DELETE'});
     loadKnowledge();
   }
 
-  // Modificar switchTab para cargar datos según pestaña
-  const originalSwitch = switchTab;
-  switchTab = function(tab, el) {
-    originalSwitch(tab, el);
-    if (tab === 'ai') {
-      loadAIConfig();
-      loadKnowledge();
-    }
-  };
+  // ══════════════════════════════════════════════════
+  // INIT
+  // ══════════════════════════════════════════════════
+  async function loadAll() {
+    await Promise.all([loadServices(), loadStats(), loadCases(), loadModerators()]);
+  }
+
+  loadAll();
+  setInterval(loadAll, 15000);
 </script>
 </body>
 </html>
