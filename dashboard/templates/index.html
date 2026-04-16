@@ -348,6 +348,33 @@
     .stats-row { grid-template-columns: repeat(2, 1fr); }
     .main-grid { grid-template-columns: 1fr; }
   }
+
+  /* IA Config */
+.config-section { padding: 14px; }
+.config-label { font-size: 10px; color: var(--text3); text-transform: uppercase; margin-bottom: 4px; }
+.config-textarea {
+  width: 100%; background: var(--bg); border: 1px solid var(--border2);
+  color: var(--text); font-family: 'Courier New', monospace; font-size: 11px;
+  padding: 8px; border-radius: 6px; resize: vertical; min-height: 120px;
+}
+.config-input {
+  width: 100%; background: var(--bg); border: 1px solid var(--border2);
+  color: var(--text); padding: 6px 8px; border-radius: 6px; font-size: 11px;
+}
+.know-item {
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; margin-bottom: 8px;
+}
+.know-header { display: flex; justify-content: space-between; margin-bottom: 4px; }
+.know-key { font-size: 12px; color: var(--blue); font-weight: bold; }
+.know-tags { font-size: 9px; color: var(--text3); }
+.know-content { font-size: 10px; color: var(--text2); margin: 6px 0; }
+.know-actions { display: flex; gap: 4px; margin-top: 6px; }
+.btn-small {
+  font-size: 9px; padding: 3px 8px; border-radius: 4px;
+  border: 1px solid var(--border2); background: var(--bg);
+  color: var(--text2); cursor: pointer;
+}
 </style>
 </head>
 <body>
@@ -441,6 +468,7 @@
         <div class="tabs">
           <button class="tabBtn on" onclick="switchTab('detail',this)">Detalle</button>
           <button class="tabBtn" onclick="switchTab('history',this)">Historial</button>
+          <button class="tabBtn" onclick="switchTab('ai',this)">IA</button>
         </div>
         <div id="tabDetail">
           <div class="detail-empty" id="detailEmpty">
@@ -456,6 +484,33 @@
             <div class="detail-empty">Seleccioná un caso primero</div>
           </div>
         </div>
+        <div id="tabAI" style="display:none;">
+        <div class="config-section">
+          <div class="config-label">Prompt del sistema</div>
+          <textarea id="aiPrompt" class="config-textarea" placeholder="Instrucciones para la IA..."></textarea>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
+            <div>
+              <div class="config-label">Temperature</div>
+              <input type="number" id="aiTemp" step="0.1" min="0" max="2" class="config-input">
+            </div>
+            <div>
+              <div class="config-label">Max tokens</div>
+              <input type="number" id="aiTokens" class="config-input">
+            </div>
+          </div>
+          <div style="margin-top:12px;">
+            <div class="config-label">Contexto (mensajes)</div>
+            <input type="number" id="aiContext" min="2" max="20" class="config-input">
+          </div>
+          <button class="btn-svc" style="margin-top:12px;width:100%;" onclick="saveAIConfig()">Guardar configuración</button>
+        </div>
+        <hr style="border-color:var(--border);margin:0 14px;">
+        <div class="config-section">
+          <div class="config-label">Base de conocimiento</div>
+          <div id="knowledgeList"></div>
+          <button class="btn-svc" style="width:100%;margin-top:8px;" onclick="addKnowledge()">+ Agregar conocimiento</button>
+        </div>
+      </div>
       </div>
 
       <!-- MODERADORES -->
@@ -923,6 +978,82 @@
 
   loadAll();
   setInterval(loadAll, 15000);
+
+    // Cargar configuración IA al cambiar a la pestaña
+  async function loadAIConfig() {
+    try {
+      const res = await fetch(API_BOT + '/admin/ai/config');
+      const cfg = await res.json();
+      document.getElementById('aiPrompt').value = cfg.system_prompt || '';
+      document.getElementById('aiTemp').value = cfg.temperature || 0.9;
+      document.getElementById('aiTokens').value = cfg.max_tokens || 400;
+      document.getElementById('aiContext').value = cfg.context_window || 10;
+    } catch(e) { console.error(e); }
+  }
+
+  async function saveAIConfig() {
+    const payload = {
+      system_prompt: document.getElementById('aiPrompt').value,
+      temperature: parseFloat(document.getElementById('aiTemp').value),
+      max_tokens: parseInt(document.getElementById('aiTokens').value),
+      context_window: parseInt(document.getElementById('aiContext').value)
+    };
+    await fetch(API_BOT + '/admin/ai/config', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    toast('Configuración guardada', 'ok');
+  }
+
+  async function loadKnowledge() {
+    const res = await fetch(API_BOT + '/admin/knowledge');
+    const items = await res.json();
+    const html = items.map(k => `
+      <div class="know-item">
+        <div class="know-header">
+          <span class="know-key">${k.key}</span>
+          <span class="know-tags">${k.tags || ''}</span>
+        </div>
+        <div class="know-content">${k.content.substring(0,100)}...</div>
+        <div class="know-actions">
+          <button class="btn-small" onclick="editKnowledge(${k.id})">editar</button>
+          <button class="btn-small" onclick="deleteKnowledge(${k.id})">borrar</button>
+          <span style="margin-left:auto;font-size:9px;color:var(--text3);">${k.enabled?'✅':'❌'}</span>
+        </div>
+      </div>
+    `).join('');
+    document.getElementById('knowledgeList').innerHTML = html || '<div class="empty-msg">Sin conocimientos</div>';
+  }
+
+  function addKnowledge() {
+    const key = prompt('Clave (ej: carhue_historia):');
+    if(!key) return;
+    const content = prompt('Contenido:');
+    if(!content) return;
+    const tags = prompt('Tags (separados por coma):');
+    fetch(API_BOT + '/admin/knowledge', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({key, content, tags, enabled: true})
+    }).then(() => loadKnowledge());
+  }
+
+  async function deleteKnowledge(id) {
+    if(!confirm('¿Borrar este conocimiento?')) return;
+    await fetch(API_BOT + '/admin/knowledge/' + id, {method:'DELETE'});
+    loadKnowledge();
+  }
+
+  // Modificar switchTab para cargar datos según pestaña
+  const originalSwitch = switchTab;
+  switchTab = function(tab, el) {
+    originalSwitch(tab, el);
+    if (tab === 'ai') {
+      loadAIConfig();
+      loadKnowledge();
+    }
+  };
 </script>
 </body>
 </html>

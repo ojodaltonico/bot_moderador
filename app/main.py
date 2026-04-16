@@ -1277,3 +1277,77 @@ def dashboard_decide(payload: dict, db: Session = Depends(get_db)):
             "status": result["user"].status
         }
     }
+
+
+from app.models.ai_settings import AISettings
+from app.models.knowledge import Knowledge
+from app.utils.ai_config import get_ai_config  # para invalidar caché
+
+@app.get("/admin/ai/config")
+def get_ai_config_endpoint(db: Session = Depends(get_db)):
+    config = db.query(AISettings).filter(AISettings.id == 1).first()
+    if not config:
+        config = AISettings(id=1)
+        db.add(config)
+        db.commit()
+        db.refresh(config)
+    return {
+        "system_prompt": config.system_prompt,
+        "temperature": config.temperature,
+        "max_tokens": config.max_tokens,
+        "context_window": config.context_window
+    }
+
+@app.post("/admin/ai/config")
+def update_ai_config(payload: dict, db: Session = Depends(get_db)):
+    config = db.query(AISettings).filter(AISettings.id == 1).first()
+    if not config:
+        config = AISettings(id=1)
+        db.add(config)
+    config.system_prompt = payload.get("system_prompt", config.system_prompt)
+    config.temperature = payload.get("temperature", config.temperature)
+    config.max_tokens = payload.get("max_tokens", config.max_tokens)
+    config.context_window = payload.get("context_window", config.context_window)
+    db.commit()
+    # Invalidar caché
+    import app.utils.ai_config as ai_config
+    ai_config._last_fetch = 0
+    return {"ok": True}
+
+@app.get("/admin/knowledge")
+def list_knowledge(db: Session = Depends(get_db)):
+    items = db.query(Knowledge).all()
+    return [{"id": k.id, "key": k.key, "content": k.content, "tags": k.tags, "enabled": k.enabled} for k in items]
+
+@app.post("/admin/knowledge")
+def create_knowledge(payload: dict, db: Session = Depends(get_db)):
+    k = Knowledge(
+        key=payload["key"],
+        content=payload["content"],
+        tags=payload.get("tags", ""),
+        enabled=payload.get("enabled", True)
+    )
+    db.add(k)
+    db.commit()
+    db.refresh(k)
+    return {"id": k.id}
+
+@app.put("/admin/knowledge/{kid}")
+def update_knowledge(kid: int, payload: dict, db: Session = Depends(get_db)):
+    k = db.query(Knowledge).filter(Knowledge.id == kid).first()
+    if not k:
+        raise HTTPException(status_code=404)
+    k.key = payload.get("key", k.key)
+    k.content = payload.get("content", k.content)
+    k.tags = payload.get("tags", k.tags)
+    k.enabled = payload.get("enabled", k.enabled)
+    db.commit()
+    return {"ok": True}
+
+@app.delete("/admin/knowledge/{kid}")
+def delete_knowledge(kid: int, db: Session = Depends(get_db)):
+    k = db.query(Knowledge).filter(Knowledge.id == kid).first()
+    if k:
+        db.delete(k)
+        db.commit()
+    return {"ok": True}

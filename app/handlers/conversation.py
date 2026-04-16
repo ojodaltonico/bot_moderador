@@ -368,11 +368,13 @@ class ConversationHandler:
         }
 
     def _chat_with_ai(self, phone: str, message: str, reply_jid: str | None):
+        # phone ya viene normalizado desde handle_message
+        ai_response = ask_groq(phone, message)
         return {
             "instructions": {
                 "send_message": True,
                 "to": self._target(phone, reply_jid),
-                "text": ask_groq(message)
+                "text": ai_response
             }
         }
 

@@ -11,3 +11,8 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
+
+
+from app.models.conversation import ConversationTurn
+from app.models.ai_settings import AISettings
+from app.models.knowledge import Knowledge
