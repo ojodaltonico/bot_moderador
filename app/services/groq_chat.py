@@ -44,24 +44,22 @@ def _fecha_en_espanol():
         return f"{dia_es} {now.day} de {mes_es}"
 
 def _call_groq(messages, temperature=0.7, max_tokens=200):
-    """Llama a la API de Groq y devuelve el contenido de la respuesta."""
     payload = {
         "model": GROQ_MODEL,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
-
     req = request.Request(
         GROQ_API_URL,
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {GROQ_API_KEY}",
             "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (compatible; WhatsAppBot/1.0)"
         },
         method="POST",
     )
-
     try:
         with request.urlopen(req, timeout=20) as response:
             data = json.loads(response.read().decode("utf-8"))
