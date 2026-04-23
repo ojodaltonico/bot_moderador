@@ -8,11 +8,12 @@ from app.config import MEDIA_IMAGES_PATH
 
 os.makedirs(MEDIA_IMAGES_PATH, exist_ok=True)
 
-from app.database import Base, engine
+from app.database import Base, engine, ensure_sqlite_schema
 from app.dependencies import get_db
 from app.models import User, Message, Case, UserAction, Moderator, PendingInstruction
 from app.config import GROUP_ID, ADMIN_PHONE, MEDIA_IMAGES_PATH
 from app.utils.auth import is_moderator
+from app.utils.message_analysis import analyze_message
 from fastapi.responses import FileResponse
 
 app = FastAPI()
@@ -24,6 +25,7 @@ app.add_middleware(
 )
 
 Base.metadata.create_all(bind=engine)
+ensure_sqlite_schema()
 
 STATUS_ACTIVE = "active"
 STATUS_WARNED = "warned"
@@ -428,14 +430,13 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
         is_group = payload.get("is_group", True)
         message_type = payload.get("message_type")
         content = payload.get("content")
+        media_caption = payload.get("media_caption")
         whatsapp_message_key = payload.get("whatsapp_message_key")
         participant_jid = payload.get("participant_jid")
+        raw_payload = payload.get("raw_payload")
 
         if not phone or not message_type:
             return {"error": "invalid payload"}
-
-        if message_type in ["audio", "video"]:
-            return {"ignored": True}
 
         user = db.query(User).filter(User.phone == phone).first()
         if not user:
@@ -448,15 +449,29 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
                 user.real_phone = real_phone
                 db.commit()
 
+        analysis = analyze_message(
+            message_type=message_type,
+            content=content if message_type == "text" else None,
+            media_caption=media_caption
+        )
+
         msg = Message(
             user_id=user.id,
             chat_id=chat_id,
             is_group=is_group,
             message_type=message_type,
             content=content if message_type == "text" else None,
+            media_caption=media_caption,
             media_filename=content if message_type == "image" else None,
             whatsapp_message_key=whatsapp_message_key,
-            participant_jid=participant_jid
+            raw_payload=raw_payload,
+            participant_jid=participant_jid,
+            category_label=analysis["category_label"],
+            intent_label=analysis["intent_label"],
+            intent_source=analysis["intent_source"],
+            contains_question=analysis["contains_question"],
+            contains_link=analysis["contains_link"],
+            content_length=analysis["content_length"]
         )
         db.add(msg)
         db.commit()
@@ -472,8 +487,7 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
         flagged = False
 
         if message_type == "text":
-            keywords = ["vendo", "venta", "precio", "promo", "oferta", "compro", "negocio", "remato", "liquidacion"]
-            if content and any(k in content.lower() for k in keywords):
+            if msg.category_label == "SALE":
                 flagged = True
                 msg.flagged = True
 
@@ -1239,6 +1253,11 @@ def dashboard_cases(db: Session = Depends(get_db)):
             "_userName": user.name if user else None,
             "_strikes": user.strikes if user else 0,
             "_mediaFilename": msg.media_filename if msg else None,
+            "_categoryLabel": msg.category_label if msg else None,
+            "_intentLabel": msg.intent_label if msg else None,
+            "_intentSource": msg.intent_source if msg else None,
+            "_containsQuestion": msg.contains_question if msg else False,
+            "_containsLink": msg.contains_link if msg else False,
             "_content": (
                 msg.content[:100] if msg and msg.message_type == "text" and msg.content
                 else "Imagen sospechosa" if msg and msg.message_type == "image"

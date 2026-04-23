@@ -33,6 +33,16 @@ const SALES_KEYWORDS = [
   "oferta", "negocio", "negociable", "venda", "comprar", "vendiendo"
 ];
 
+const SUPPORTED_GROUP_MESSAGE_TYPES = {
+  conversation: "text",
+  extendedTextMessage: "text",
+  imageMessage: "image",
+  audioMessage: "audio",
+  videoMessage: "video",
+  documentMessage: "document",
+  stickerMessage: "sticker"
+};
+
 // Directorios para medios
 const IMAGE_DIR = path.resolve("../media/temp/images");
 if (!fs.existsSync(IMAGE_DIR)) {
@@ -244,6 +254,68 @@ async function processInstructions(instructions, sock, originalChatId = null) {
   }
 }
 
+async function buildGroupMessagePayload(msg, messageType, sender, pushName, chatId, participantJid) {
+  const normalizedType = SUPPORTED_GROUP_MESSAGE_TYPES[messageType];
+  if (!normalizedType) {
+    return null;
+  }
+
+  let content = null;
+  let mediaCaption = null;
+
+  if (messageType === "conversation") {
+    content = msg.message.conversation || "";
+  } else if (messageType === "extendedTextMessage") {
+    content = msg.message.extendedTextMessage?.text || "";
+  } else if (messageType === "imageMessage") {
+    mediaCaption = msg.message.imageMessage?.caption || null;
+    try {
+      const buffer = await downloadMediaMessage(
+        msg,
+        "buffer",
+        {},
+        { logger: undefined, retryCount: 3 }
+      );
+      const mediaFilename = `img_${Date.now()}_${sender}.jpg`;
+      const filepath = path.join(IMAGE_DIR, mediaFilename);
+      fs.writeFileSync(filepath, buffer);
+      content = mediaFilename;
+      console.log(`📸 Imagen guardada: ${mediaFilename}`);
+    } catch (error) {
+      console.error("❌ Error descargando imagen:", error.message);
+    }
+  } else if (messageType === "videoMessage") {
+    mediaCaption = msg.message.videoMessage?.caption || null;
+  } else if (messageType === "documentMessage") {
+    content = msg.message.documentMessage?.fileName || null;
+    mediaCaption = msg.message.documentMessage?.caption || null;
+  }
+
+  let realPhone = sender;
+  if (msg.key.participantAlt) {
+    realPhone = msg.key.participantAlt.split("@")[0];
+  }
+
+  return {
+    phone: sender,
+    real_phone: realPhone,
+    name: pushName,
+    chat_id: chatId,
+    is_group: true,
+    message_type: normalizedType,
+    content,
+    media_caption: mediaCaption,
+    whatsapp_message_key: JSON.stringify(msg.key),
+    participant_jid: participantJid,
+    raw_payload: JSON.stringify({
+      key: msg.key,
+      pushName: msg.pushName,
+      messageTimestamp: msg.messageTimestamp,
+      message: msg.message
+    })
+  };
+}
+
 async function pollPendingInstructions(sock) {
   if (!socketReady) return;
 
@@ -378,6 +450,10 @@ async function start() {
       // Buscar el tipo de mensaje real
       const messageKeys = Object.keys(msg.message);
       const messageType = messageKeys.find(key =>
+        key === 'audioMessage' ||
+        key === 'videoMessage' ||
+        key === 'documentMessage' ||
+        key === 'stickerMessage' ||
         key === 'imageMessage' ||
         key === 'conversation' ||
         key === 'extendedTextMessage'
@@ -413,78 +489,43 @@ async function start() {
       // ============================================
       if (isGroup && chatId === GROUP_ID) {
         console.log(`   👥 Grupo monitoreado`);
-
-        let messageContent = "";
-        let mediaFilename = null;
-
-        if (messageType === "conversation") {
-          messageContent = msg.message.conversation || "";
-        } else if (messageType === "extendedTextMessage") {
-          messageContent = msg.message.extendedTextMessage?.text || "";
-        }
-
-        console.log(`   📝 Contenido: ${messageContent.substring(0, 100)}`);
-
-        const lowerContent = messageContent.toLowerCase();
-        const hasSalesKeyword = SALES_KEYWORDS.some(keyword =>
-          lowerContent.includes(keyword)
+        const payload = await buildGroupMessagePayload(
+          msg,
+          messageType,
+          sender,
+          pushName,
+          chatId,
+          participantJid
         );
 
-        console.log(`   🔍 ¿Palabra clave de venta?: ${hasSalesKeyword}`);
+        if (!payload) {
+          console.log(`   ℹ️ Tipo de mensaje no soportado para historial: ${messageType}`);
+          return;
+        }
 
-        if (messageType === "imageMessage" || hasSalesKeyword) {
-          console.log(`🚨 Mensaje sospechoso en grupo de: ${sender}`);
+        const preview = (payload.content || payload.media_caption || "").toString().substring(0, 100);
+        console.log(`   📝 Contenido: ${preview}`);
 
-          if (messageType === "imageMessage") {
-            try {
-              const buffer = await downloadMediaMessage(
-                msg,
-                "buffer",
-                {},
-                { logger: undefined, retryCount: 3 }
-              );
-              mediaFilename = `img_${Date.now()}_${sender}.jpg`;
-              const filepath = path.join(IMAGE_DIR, mediaFilename);
-              fs.writeFileSync(filepath, buffer);
-              console.log(`📸 Imagen guardada: ${mediaFilename}`);
-            } catch (error) {
-              console.error("❌ Error descargando imagen:", error.message);
-            }
+        if (payload.message_type === "text" && payload.content) {
+          const lowerContent = payload.content.toLowerCase();
+          const hasSalesKeyword = SALES_KEYWORDS.some(keyword =>
+            lowerContent.includes(keyword)
+          );
+          console.log(`   🔍 ¿Palabra clave de venta?: ${hasSalesKeyword}`);
+        }
+
+        try {
+          console.log(`   📞 Teléfono real: ${payload.real_phone}`);
+          console.log("📤 Enviando a /ingest_message...");
+          const response = await axios.post(`${API_BASE_URL}/ingest_message`, payload, {
+            timeout: 10000
+          });
+          console.log("✅ API respondió:", response.data);
+        } catch (error) {
+          console.error("❌ Error enviando a API:", error.message);
+          if (error.response) {
+            console.error("   Detalles:", error.response.data);
           }
-
-          try {
-            let realPhone = sender;
-            if (msg.key.participantAlt) {
-              realPhone = msg.key.participantAlt.split("@")[0];
-            }
-
-            const payload = {
-              phone: sender,
-              real_phone: realPhone,
-              name: pushName,
-              chat_id: chatId,
-              is_group: true,
-              message_type: messageType === "imageMessage" ? "image" : "text",
-              content: messageType === "imageMessage" ? mediaFilename : messageContent,
-              whatsapp_message_key: JSON.stringify(msg.key),
-              participant_jid: participantJid
-            };
-
-            console.log(`   📞 Teléfono real: ${realPhone}`);
-            console.log("📤 Enviando a /ingest_message...");
-            const response = await axios.post(`${API_BASE_URL}/ingest_message`, payload, {
-              timeout: 10000
-            });
-            console.log("✅ API respondió:", response.data);
-
-          } catch (error) {
-            console.error("❌ Error enviando a API:", error.message);
-            if (error.response) {
-              console.error("   Detalles:", error.response.data);
-            }
-          }
-        } else {
-          console.log(`   ✅ Mensaje normal, ignorando.`);
         }
         return;
       }
