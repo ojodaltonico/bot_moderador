@@ -16,3 +16,4 @@ Base = declarative_base()
 from app.models.conversation import ConversationTurn
 from app.models.ai_settings import AISettings
 from app.models.knowledge import Knowledge
+from app.models.pending_instruction import PendingInstruction

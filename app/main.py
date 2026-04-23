@@ -3,13 +3,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from datetime import datetime
 import os
+import json
 from app.config import MEDIA_IMAGES_PATH
 
 os.makedirs(MEDIA_IMAGES_PATH, exist_ok=True)
 
 from app.database import Base, engine
 from app.dependencies import get_db
-from app.models import User, Message, Case, UserAction, Moderator
+from app.models import User, Message, Case, UserAction, Moderator, PendingInstruction
 from app.config import GROUP_ID, ADMIN_PHONE, MEDIA_IMAGES_PATH
 from app.utils.auth import is_moderator
 from fastapi.responses import FileResponse
@@ -55,6 +56,19 @@ def _get_participant_jid(message: Message) -> str | None:
 
 def _send_text(to: str, text: str):
     return {"send_message": True, "to": to, "text": text}
+
+
+def _queue_instructions(db: Session, instructions, source: str = "dashboard"):
+    if not instructions:
+        return
+
+    instruction_list = instructions if isinstance(instructions, list) else [instructions]
+    for instruction in instruction_list:
+        db.add(PendingInstruction(
+            source=source,
+            status="pending",
+            payload=json.dumps(instruction)
+        ))
 
 
 def _log_action(db: Session, user: User, case: Case, action: str, note: str, moderator_phone: str):
@@ -1266,6 +1280,7 @@ def dashboard_decide(payload: dict, db: Session = Depends(get_db)):
         allow_reinstate=True
     )
 
+    _queue_instructions(db, result["instructions"], source="dashboard")
     db.commit()
 
     return {
@@ -1277,6 +1292,47 @@ def dashboard_decide(payload: dict, db: Session = Depends(get_db)):
             "status": result["user"].status
         }
     }
+
+
+@app.get("/connector/instructions")
+def connector_list_instructions(limit: int = 20, db: Session = Depends(get_db)):
+    items = (
+        db.query(PendingInstruction)
+        .filter(PendingInstruction.status == "pending")
+        .order_by(PendingInstruction.created_at.asc(), PendingInstruction.id.asc())
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "instructions": [
+            {
+                "id": item.id,
+                "payload": json.loads(item.payload),
+                "source": item.source,
+                "created_at": item.created_at.isoformat() if item.created_at else None
+            }
+            for item in items
+        ]
+    }
+
+
+@app.post("/connector/instructions/{instruction_id}/ack")
+def connector_ack_instruction(instruction_id: int, payload: dict, db: Session = Depends(get_db)):
+    item = db.query(PendingInstruction).filter(PendingInstruction.id == instruction_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="instruction not found")
+
+    status = payload.get("status", "processed")
+    if status not in {"processed", "failed"}:
+        raise HTTPException(status_code=400, detail="invalid status")
+
+    item.status = status
+    item.error = payload.get("error")
+    item.processed_at = datetime.now()
+    db.commit()
+
+    return {"ok": True}
 
 
 from app.models.ai_settings import AISettings

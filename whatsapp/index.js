@@ -22,6 +22,7 @@ import pino from "pino";
 const API_BASE_URL = "http://localhost:8000";
 const GROUP_ID = "120363200443002725@g.us";
 let socketReady = false;
+let instructionPoller = null;
 
 // Logger silencioso (evita spam en consola, reduce fingerprint raro)
 const logger = pino({ level: "silent" });
@@ -243,6 +244,38 @@ async function processInstructions(instructions, sock, originalChatId = null) {
   }
 }
 
+async function pollPendingInstructions(sock) {
+  if (!socketReady) return;
+
+  try {
+    const response = await axios.get(`${API_BASE_URL}/connector/instructions`, {
+      timeout: 10000
+    });
+
+    const items = response.data.instructions || [];
+    if (!items.length) return;
+
+    console.log(`📥 Instrucciones pendientes recibidas: ${items.length}`);
+
+    for (const item of items) {
+      try {
+        await processInstructions(item.payload, sock);
+        await axios.post(`${API_BASE_URL}/connector/instructions/${item.id}/ack`, {
+          status: "processed"
+        }, { timeout: 10000 });
+      } catch (error) {
+        console.error(`❌ Error ejecutando instrucción pendiente ${item.id}:`, error.message);
+        await axios.post(`${API_BASE_URL}/connector/instructions/${item.id}/ack`, {
+          status: "failed",
+          error: error.message
+        }, { timeout: 10000 });
+      }
+    }
+  } catch (error) {
+    console.error("❌ Error consultando instrucciones pendientes:", error.message);
+  }
+}
+
 // ================================
 // FUNCIÓN PRINCIPAL
 // ================================
@@ -283,6 +316,10 @@ async function start() {
 
     if (connection === "close") {
       socketReady = false;
+      if (instructionPoller) {
+        clearInterval(instructionPoller);
+        instructionPoller = null;
+      }
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       console.log(`Conexión cerrada. Razón: ${reason}`);
 
@@ -299,6 +336,14 @@ async function start() {
     if (connection === "open") {
       console.log("✅ WhatsApp conectado y listo para enviar mensajes");
       socketReady = true;
+
+      if (!instructionPoller) {
+        instructionPoller = setInterval(() => {
+          pollPendingInstructions(sock);
+        }, 3000);
+      }
+
+      pollPendingInstructions(sock);
     }
   });
 
