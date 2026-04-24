@@ -283,6 +283,7 @@ def _resolve_case(
 
             user.strikes += 1
             user.status = STATUS_BANNED
+            message.deleted = True
             case.resolution = "banned"
             _log_action(db, user, case, "ban", note or "Expulsado del grupo (3er strike)", moderator_phone)
 
@@ -1242,6 +1243,8 @@ def dashboard_cases(db: Session = Depends(get_db)):
     for c in cases:
         msg = db.query(Message).filter(Message.id == c.message_id).first()
         user = db.query(User).filter(User.id == msg.user_id).first() if msg else None
+        effective_category = (msg.reviewed_category_label or msg.category_label) if msg else None
+        effective_intent = (msg.reviewed_intent_label or msg.intent_label) if msg else None
         result.append({
             "id": c.id,
             "type": c.type,
@@ -1249,22 +1252,64 @@ def dashboard_cases(db: Session = Depends(get_db)):
             "priority": c.priority,
             "resolution": c.resolution,
             "created_at": c.created_at.isoformat() if c.created_at else None,
+            "_messageId": msg.id if msg else None,
             "_userPhone": user.real_phone or user.phone if user else None,
             "_userName": user.name if user else None,
             "_strikes": user.strikes if user else 0,
             "_mediaFilename": msg.media_filename if msg else None,
+            "_deleted": msg.deleted if msg else False,
             "_categoryLabel": msg.category_label if msg else None,
             "_intentLabel": msg.intent_label if msg else None,
             "_intentSource": msg.intent_source if msg else None,
+            "_reviewedCategoryLabel": msg.reviewed_category_label if msg else None,
+            "_reviewedIntentLabel": msg.reviewed_intent_label if msg else None,
+            "_reviewedBy": msg.reviewed_by if msg else None,
+            "_reviewedAt": msg.reviewed_at.isoformat() if msg and msg.reviewed_at else None,
+            "_effectiveCategoryLabel": effective_category,
+            "_effectiveIntentLabel": effective_intent,
             "_containsQuestion": msg.contains_question if msg else False,
             "_containsLink": msg.contains_link if msg else False,
             "_content": (
                 msg.content[:100] if msg and msg.message_type == "text" and msg.content
-                else "Imagen sospechosa" if msg and msg.message_type == "image"
+                else (msg.media_caption[:100] if msg and msg.message_type == "image" and msg.media_caption else "Imagen sospechosa") if msg and msg.message_type == "image"
                 else c.note or ""
             )
         })
     return {"cases": result}
+
+
+@app.post("/dashboard/messages/{message_id}/classify")
+def dashboard_classify_message(message_id: int, payload: dict, db: Session = Depends(get_db)):
+    category_label = payload.get("category_label")
+    intent_label = payload.get("intent_label")
+    reviewer = str(payload.get("reviewed_by") or ADMIN_PHONE)
+
+    allowed_categories = {"SALE", "QUESTION", "CHAT", "MEDIA", "LINK", "COMPLAINT", "GREETING", "GENERAL"}
+    allowed_intents = {"OFFER", "INFO_REQUEST", "GENERAL", "MEDIA_SHARE", "SHARE_LINK", "COMPLAINT", "SOCIAL"}
+
+    if category_label not in allowed_categories:
+        raise HTTPException(status_code=400, detail="categoria invalida")
+    if intent_label not in allowed_intents:
+        raise HTTPException(status_code=400, detail="intencion invalida")
+
+    msg = db.query(Message).filter(Message.id == message_id).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="mensaje no encontrado")
+
+    msg.reviewed_category_label = category_label
+    msg.reviewed_intent_label = intent_label
+    msg.reviewed_by = reviewer
+    msg.reviewed_at = datetime.now()
+    db.commit()
+
+    return {
+        "ok": True,
+        "message_id": msg.id,
+        "reviewed_category_label": msg.reviewed_category_label,
+        "reviewed_intent_label": msg.reviewed_intent_label,
+        "reviewed_by": msg.reviewed_by,
+        "reviewed_at": msg.reviewed_at.isoformat() if msg.reviewed_at else None
+    }
 
 
 @app.get("/dashboard/moderators")

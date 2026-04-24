@@ -375,6 +375,31 @@
   border: 1px solid var(--border2); background: var(--bg);
   color: var(--text2); cursor: pointer;
 }
+.classify-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.classify-select {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  color: var(--text);
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+.meta-chip {
+  display: inline-block;
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border2);
+  color: var(--text2);
+  background: var(--bg);
+  margin-right: 6px;
+  margin-bottom: 6px;
+}
 </style>
 </head>
 <body>
@@ -545,6 +570,8 @@
   let selectedCase = null;
   let openLogService = null;
   let currentTab = 'detail';
+  const CATEGORY_OPTIONS = ['SALE','QUESTION','CHAT','MEDIA','LINK','COMPLAINT','GREETING','GENERAL'];
+  const INTENT_OPTIONS = ['OFFER','INFO_REQUEST','GENERAL','MEDIA_SHARE','SHARE_LINK','COMPLAINT','SOCIAL'];
 
   // ── TOAST ──────────────────────────────────────────
   function toast(msg, type = '') {
@@ -780,6 +807,10 @@
   }
   function closeImg() {
     document.getElementById('imgOverlay').classList.remove('open');
+  }
+
+  function renderOptions(list, current) {
+    return list.map(item => `<option value="${item}" ${item === current ? 'selected' : ''}>${item}</option>`).join('');
   }
 
   function renderDetail(c) {
@@ -1085,6 +1116,131 @@
   // ══════════════════════════════════════════════════
   // INIT
   // ══════════════════════════════════════════════════
+  async function saveClassification(messageId) {
+    const category = document.getElementById('categorySelect')?.value;
+    const intent = document.getElementById('intentSelect')?.value;
+    if (!category || !intent) {
+      toast('Faltan categoría o intención', 'err');
+      return;
+    }
+
+    try {
+      const res = await fetch(API_BOT + '/dashboard/messages/' + messageId + '/classify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          category_label: category,
+          intent_label: intent,
+          reviewed_by: ADMIN
+        })
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        toast('Error: ' + (err.detail || 'no se pudo guardar'), 'err');
+        return;
+      }
+
+      toast('Clasificación guardada', 'ok');
+
+      if (selectedCase) {
+        selectedCase._reviewedCategoryLabel = category;
+        selectedCase._reviewedIntentLabel = intent;
+        selectedCase._reviewedBy = ADMIN;
+        selectedCase._reviewedAt = new Date().toISOString();
+        selectedCase._effectiveCategoryLabel = category;
+        selectedCase._effectiveIntentLabel = intent;
+        renderDetail(selectedCase);
+      }
+    } catch(e) {
+      toast('Sin conexión con la API del bot (puerto 8000)', 'err');
+    }
+  }
+
+  function renderDetail(c) {
+    document.getElementById('detailEmpty').style.display = 'none';
+    document.getElementById('detailContent').style.display = 'block';
+
+    const strikeColor = c._strikes >= 3 ? 'val-red' : c._strikes >= 2 ? 'val-yellow' : 'val-green';
+    let contentBlock = '';
+
+    if (c.type === 'image_review' && c._mediaFilename) {
+      const imgUrl = `${API_BOT}/media/images/${c._mediaFilename}?phone=${ADMIN}`;
+      contentBlock = `
+        <div class="d-label">imagen sospechosa</div>
+        <img class="case-image" src="${imgUrl}"
+             onclick="openImg('${imgUrl}')"
+             onerror="this.parentElement.innerHTML='<div class=\\'img-loading\\'>No se pudo cargar la imagen<br><small>${c._mediaFilename}</small></div>'"
+             alt="imagen del caso">
+        <div style="font-size:10px;color:var(--text3);margin-top:4px;">click para ampliar</div>
+      `;
+    } else {
+      contentBlock = `
+        <div class="d-label">contenido</div>
+        <div class="msg-bubble">${c._content || '(sin contenido disponible)'}</div>
+      `;
+    }
+
+    document.getElementById('detailBody').innerHTML = `
+      <div class="d-section">
+        <div class="d-label">caso #${c.id}</div>
+        <div class="d-row"><span class="d-key">tipo</span><span class="d-val">${c.type}</span></div>
+        <div class="d-row"><span class="d-key">estado</span><span class="d-val">${c.status}</span></div>
+        <div class="d-row"><span class="d-key">prioridad</span><span class="d-val">${c.priority}</span></div>
+        <div class="d-row"><span class="d-key">creado</span><span class="d-val">${ago(c.created_at)}</span></div>
+        ${c.resolution ? `<div class="d-row"><span class="d-key">resolución</span><span class="d-val">${c.resolution}</span></div>` : ''}
+      </div>
+      <div class="d-section">
+        <div class="d-label">usuario</div>
+        <div class="d-row"><span class="d-key">nombre</span><span class="d-val">${c._userName || '—'}</span></div>
+        <div class="d-row"><span class="d-key">teléfono</span><span class="d-val">+${c._userPhone || '—'}</span></div>
+        <div class="d-row"><span class="d-key">strikes</span><span class="d-val ${strikeColor}">${c._strikes}/3</span></div>
+        <div class="d-row"><span class="d-key">mensaje</span><span class="d-val">${c._deleted ? 'borrado' : 'visible'}</span></div>
+      </div>
+      <div class="d-section">
+        <div class="d-label">clasificación</div>
+        <div class="d-row"><span class="d-key">efectiva</span><span class="d-val">${c._effectiveCategoryLabel || '—'} / ${c._effectiveIntentLabel || '—'}</span></div>
+        <div class="d-row"><span class="d-key">predicción</span><span class="d-val">${c._categoryLabel || '—'} / ${c._intentLabel || '—'}</span></div>
+        <div class="d-row"><span class="d-key">origen</span><span class="d-val">${c._intentSource || '—'}</span></div>
+        ${c._reviewedCategoryLabel || c._reviewedIntentLabel ? `<div class="d-row"><span class="d-key">revisión</span><span class="d-val">${c._reviewedCategoryLabel || '—'} / ${c._reviewedIntentLabel || '—'}</span></div>` : ''}
+        ${c._reviewedBy ? `<div class="d-row"><span class="d-key">revisado por</span><span class="d-val">${c._reviewedBy}</span></div>` : ''}
+        ${c._reviewedAt ? `<div class="d-row"><span class="d-key">revisado</span><span class="d-val">${ago(c._reviewedAt)}</span></div>` : ''}
+        <div style="margin-top:8px;">
+          <span class="meta-chip">${c._deleted ? 'borrado en sistema' : 'no borrado'}</span>
+          <span class="meta-chip">${c._containsQuestion ? 'pregunta detectada' : 'sin pregunta'}</span>
+          <span class="meta-chip">${c._containsLink ? 'contiene link' : 'sin link'}</span>
+        </div>
+        ${c._messageId ? `
+          <div class="classify-grid" style="margin-top:10px;">
+            <select id="categorySelect" class="classify-select">${renderOptions(CATEGORY_OPTIONS, c._reviewedCategoryLabel || c._categoryLabel || 'GENERAL')}</select>
+            <select id="intentSelect" class="classify-select">${renderOptions(INTENT_OPTIONS, c._reviewedIntentLabel || c._intentLabel || 'GENERAL')}</select>
+          </div>
+          <button class="btn-action" style="margin-top:8px;" onclick="saveClassification(${c._messageId})">guardar clasificación</button>
+        ` : ''}
+      </div>
+      <div class="d-section">${contentBlock}</div>
+    `;
+
+    let actions = '';
+    if (c.status === 'pending' || c.status === 'in_review') {
+      if (c.type === 'appeal') {
+        actions = `
+          <button class="btn-action ok" onclick="actCase(${c.id},'accept_appeal')">aceptar apelación (quitar 1 strike)</button>
+          <button class="btn-action warn" onclick="actCase(${c.id},'reject_appeal')">rechazar apelación</button>
+        `;
+      } else {
+        actions = `
+          <button class="btn-action ok" onclick="actCase(${c.id},'ignore')">ignorar (no es infracción)</button>
+          <button class="btn-action warn" onclick="actCase(${c.id},'delete')">borrar mensaje + 1 strike</button>
+          ${c._strikes >= 2 ? `<button class="btn-action danger" onclick="actCase(${c.id},'ban')">expulsar (3er strike)</button>` : ''}
+        `;
+      }
+    } else {
+      actions = `<div style="font-size:11px;color:var(--text3);padding:4px 0;">caso ${c.status}${c.resolution ? ' - ' + c.resolution : ''}</div>`;
+    }
+    document.getElementById('actionBar').innerHTML = actions;
+  }
+
   async function loadAll() {
     await Promise.all([loadServices(), loadStats(), loadCases(), loadModerators()]);
   }
