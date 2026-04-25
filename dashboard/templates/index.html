@@ -410,31 +410,32 @@
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 14px 16px;
 }
 .report-value {
-  font-size: 20px;
+  font-size: 30px;
   font-weight: bold;
   color: var(--text);
+  line-height: 1;
 }
 .report-label {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text3);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  margin-bottom: 4px;
+  margin-bottom: 8px;
 }
 .report-sub {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text3);
-  margin-top: 4px;
+  margin-top: 8px;
 }
 .history-wrap {
   max-height: 460px;
   overflow-y: auto;
 }
 .msg-item {
-  padding: 10px 14px;
+  padding: 14px;
   border-top: 1px solid var(--border);
 }
 .msg-top {
@@ -444,19 +445,45 @@
   margin-bottom: 4px;
 }
 .msg-user {
-  font-size: 11px;
+  font-size: 13px;
+  font-weight: bold;
   color: var(--text);
 }
 .msg-time {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text3);
 }
 .msg-preview {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text2);
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.msg-editor {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+  margin-top: 10px;
+}
+.msg-editor .classify-select {
+  font-size: 12px;
+  padding: 8px 10px;
+}
+.btn-inline {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border2);
+  background: var(--bg);
+  color: var(--text2);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.btn-inline:hover {
+  background: var(--bg3);
+  color: var(--text);
+  border-color: var(--blue);
 }
 .mini-list {
   padding: 0 14px 14px;
@@ -465,9 +492,9 @@
   display: flex;
   justify-content: space-between;
   gap: 8px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text2);
-  padding: 6px 0;
+  padding: 8px 0;
   border-top: 1px solid var(--border);
 }
 </style>
@@ -1228,6 +1255,46 @@
     }
   }
 
+  async function saveHistoryClassification(messageId) {
+    const category = document.getElementById(`histCategory_${messageId}`)?.value;
+    const intent = document.getElementById(`histIntent_${messageId}`)?.value;
+    if (!category || !intent) {
+      toast('Faltan categoría o intención', 'err');
+      return;
+    }
+
+    try {
+      const res = await fetch(API_BOT + '/dashboard/messages/' + messageId + '/classify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          category_label: category,
+          intent_label: intent,
+          reviewed_by: ADMIN
+        })
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        toast('Error: ' + (err.detail || 'no se pudo guardar'), 'err');
+        return;
+      }
+
+      if (groupReport?.recent_messages) {
+        const msg = groupReport.recent_messages.find(item => item.id === messageId);
+        if (msg) {
+          msg.effective_category = category;
+          msg.effective_intent = intent;
+        }
+      }
+
+      toast('Clasificación guardada', 'ok');
+      renderHistory(selectedCase);
+    } catch(e) {
+      toast('Sin conexión con la API del bot (puerto 8000)', 'err');
+    }
+  }
+
   function renderDetail(c) {
     document.getElementById('detailEmpty').style.display = 'none';
     document.getElementById('detailContent').style.display = 'block';
@@ -1419,6 +1486,11 @@
               <span class="meta-chip">${msg.message_type || '—'}</span>
               <span class="meta-chip">${msg.deleted ? 'borrado' : 'visible'}</span>
               <span class="meta-chip">${msg.effective_intent || '—'}</span>
+            </div>
+            <div class="msg-editor">
+              <select id="histCategory_${msg.id}" class="classify-select">${renderOptions(CATEGORY_OPTIONS, msg.effective_category || 'GENERAL')}</select>
+              <select id="histIntent_${msg.id}" class="classify-select">${renderOptions(INTENT_OPTIONS, msg.effective_intent || 'GENERAL')}</select>
+              <button class="btn-inline" onclick="saveHistoryClassification(${msg.id})">guardar</button>
             </div>
           </div>
         `).join('') : '<div class="detail-empty">No hay mensajes guardados todavía</div>'}
