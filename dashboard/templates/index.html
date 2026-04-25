@@ -400,6 +400,76 @@
   margin-right: 6px;
   margin-bottom: 6px;
 }
+.report-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  padding: 14px;
+}
+.report-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.report-value {
+  font-size: 20px;
+  font-weight: bold;
+  color: var(--text);
+}
+.report-label {
+  font-size: 10px;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+}
+.report-sub {
+  font-size: 10px;
+  color: var(--text3);
+  margin-top: 4px;
+}
+.history-wrap {
+  max-height: 460px;
+  overflow-y: auto;
+}
+.msg-item {
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+.msg-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.msg-user {
+  font-size: 11px;
+  color: var(--text);
+}
+.msg-time {
+  font-size: 10px;
+  color: var(--text3);
+}
+.msg-preview {
+  font-size: 11px;
+  color: var(--text2);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mini-list {
+  padding: 0 14px 14px;
+}
+.mini-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text2);
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
 </style>
 </head>
 <body>
@@ -570,6 +640,7 @@
   let selectedCase = null;
   let openLogService = null;
   let currentTab = 'detail';
+  let groupReport = null;
   const CATEGORY_OPTIONS = ['SALE','QUESTION','CHAT','MEDIA','LINK','COMPLAINT','GREETING','GENERAL'];
   const INTENT_OPTIONS = ['OFFER','INFO_REQUEST','GENERAL','MEDIA_SHARE','SHARE_LINK','COMPLAINT','SOCIAL'];
 
@@ -1016,8 +1087,8 @@
     document.getElementById('tabHistory').style.display = (tab === 'history') ? 'block' : 'none';
     document.getElementById('tabAI').style.display      = (tab === 'ai')      ? 'block' : 'none';
 
-    if (tab === 'history' && selectedCase) {
-      renderHistory(selectedCase);
+    if (tab === 'history') {
+      loadGroupReport();
     }
     if (tab === 'ai') {
       loadAIConfig();
@@ -1241,8 +1312,128 @@
     document.getElementById('actionBar').innerHTML = actions;
   }
 
+  async function loadGroupReport() {
+    try {
+      const res = await fetch(API_BOT + '/dashboard/group_report?days=1&limit=40');
+      if (!res.ok) throw new Error('no report');
+      groupReport = await res.json();
+    } catch (e) {
+      groupReport = null;
+    }
+    renderHistory(selectedCase);
+  }
+
+  function renderHistory(c) {
+    const caseItems = c ? [
+      { action: 'Caso creado', detail: c.type === 'infringement' ? 'Keyword de venta detectada' : c.type === 'image_review' ? 'Imagen enviada al grupo' : 'Apelación enviada', time: c.created_at, mod: 'Sistema' },
+      ...(c.status !== 'pending' ? [{ action: c.resolution || 'Resuelto', detail: 'Caso procesado', time: new Date().toISOString(), mod: c.resolved_by || 'Moderador' }] : [])
+    ] : [];
+
+    const caseHtml = caseItems.length ? `
+      <div class="mini-list">
+        ${caseItems.map(h => `
+          <div class="hist-item">
+            <div class="hist-row1">
+              <span class="hist-action">${h.action}</span>
+              <span class="hist-time">${ago(h.time)}</span>
+            </div>
+            <div class="hist-detail">${h.detail}</div>
+            <div class="hist-mod">por ${h.mod}</div>
+          </div>
+        `).join('')}
+      </div>
+    ` : '';
+
+    if (!groupReport) {
+      document.getElementById('historyContent').innerHTML = caseHtml || '<div class="detail-empty">Cargando historial del grupo...</div>';
+      return;
+    }
+
+    const summary = groupReport.summary || {};
+    const categories = groupReport.categories || [];
+    const topUsers = groupReport.top_users || [];
+    const recentMessages = groupReport.recent_messages || [];
+
+    document.getElementById('historyContent').innerHTML = `
+      ${caseHtml}
+      <div class="report-grid">
+        <div class="report-card">
+          <div class="report-label">Mensajes</div>
+          <div class="report-value">${summary.total_messages ?? 0}</div>
+          <div class="report-sub">último día</div>
+        </div>
+        <div class="report-card">
+          <div class="report-label">Usuarios activos</div>
+          <div class="report-value">${summary.active_users ?? 0}</div>
+          <div class="report-sub">de ${summary.total_users ?? 0} registrados</div>
+        </div>
+        <div class="report-card">
+          <div class="report-label">Muy activos</div>
+          <div class="report-value">${summary.very_active_users ?? 0}</div>
+          <div class="report-sub">3+ mensajes en el día</div>
+        </div>
+        <div class="report-card">
+          <div class="report-label">Hora pico</div>
+          <div class="report-value">${summary.peak_hour || '—'}</div>
+          <div class="report-sub">mayor movimiento</div>
+        </div>
+        <div class="report-card">
+          <div class="report-label">Preguntas</div>
+          <div class="report-value">${summary.questions ?? 0}</div>
+          <div class="report-sub">mensajes con pregunta</div>
+        </div>
+        <div class="report-card">
+          <div class="report-label">Borrados</div>
+          <div class="report-value">${summary.deleted_messages ?? 0}</div>
+          <div class="report-sub">marcados como borrados</div>
+        </div>
+      </div>
+      <div class="mini-list">
+        <div class="d-label">Temas / categorías</div>
+        ${categories.length ? categories.slice(0, 6).map(item => `
+          <div class="mini-item">
+            <span>${item.label}</span>
+            <strong>${item.count}</strong>
+          </div>
+        `).join('') : '<div class="empty-msg">Sin categorías todavía</div>'}
+      </div>
+      <div class="mini-list">
+        <div class="d-label">Usuarios más activos</div>
+        ${topUsers.length ? topUsers.map(item => `
+          <div class="mini-item">
+            <span>${item.name || '+' + item.phone}</span>
+            <strong>${item.count}</strong>
+          </div>
+        `).join('') : '<div class="empty-msg">Sin actividad registrada</div>'}
+      </div>
+      <div class="d-label" style="padding:0 14px 8px;">Mensajes recientes</div>
+      <div class="history-wrap">
+        ${recentMessages.length ? recentMessages.map(msg => `
+          <div class="msg-item">
+            <div class="msg-top">
+              <span class="msg-user">${msg.user_name || '+' + (msg.user_phone || '—')} · ${msg.effective_category || '—'}</span>
+              <span class="msg-time">${ago(msg.created_at)}</span>
+            </div>
+            <div class="msg-preview">${msg.preview || '(sin contenido)'}</div>
+            <div style="margin-top:6px;">
+              <span class="meta-chip">${msg.message_type || '—'}</span>
+              <span class="meta-chip">${msg.deleted ? 'borrado' : 'visible'}</span>
+              <span class="meta-chip">${msg.effective_intent || '—'}</span>
+            </div>
+          </div>
+        `).join('') : '<div class="detail-empty">No hay mensajes guardados todavía</div>'}
+      </div>
+    `;
+  }
+
   async function loadAll() {
-    await Promise.all([loadServices(), loadStats(), loadCases(), loadModerators()]);
+    await Promise.all([
+      loadServices(),
+      loadStats(),
+      loadCases(),
+      loadModerators(),
+      currentTab === 'history' ? loadGroupReport() : Promise.resolve()
+    ]);
   }
 
   loadAll();

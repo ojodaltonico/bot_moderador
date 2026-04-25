@@ -1,7 +1,8 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from datetime import datetime
+from sqlalchemy import func
+from datetime import datetime, timedelta
 import os
 import json
 from app.config import MEDIA_IMAGES_PATH
@@ -1276,6 +1277,117 @@ def dashboard_cases(db: Session = Depends(get_db)):
             )
         })
     return {"cases": result}
+
+
+@app.get("/dashboard/group_report")
+def dashboard_group_report(days: int = 1, limit: int = 40, db: Session = Depends(get_db)):
+    days = max(1, min(days, 30))
+    limit = max(10, min(limit, 200))
+
+    now = datetime.now()
+    period_start = now - timedelta(days=days - 1)
+    period_start = period_start.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    group_messages = (
+        db.query(Message)
+        .filter(
+            Message.is_group == True,
+            Message.chat_id == GROUP_ID,
+            Message.created_at >= period_start
+        )
+        .order_by(Message.created_at.asc(), Message.id.asc())
+        .all()
+    )
+
+    recent_messages = (
+        db.query(Message)
+        .filter(
+            Message.is_group == True,
+            Message.chat_id == GROUP_ID
+        )
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+    total_users = (
+        db.query(func.count(User.id))
+        .scalar()
+    ) or 0
+
+    active_threshold = 3
+    user_counts = {}
+    hourly_counts = {}
+    category_counts = {}
+
+    for msg in group_messages:
+        user_counts[msg.user_id] = user_counts.get(msg.user_id, 0) + 1
+        hour_key = msg.created_at.strftime("%H:00") if msg.created_at else "??:00"
+        hourly_counts[hour_key] = hourly_counts.get(hour_key, 0) + 1
+        effective_category = msg.reviewed_category_label or msg.category_label or "UNCLASSIFIED"
+        category_counts[effective_category] = category_counts.get(effective_category, 0) + 1
+
+    active_users = sum(1 for count in user_counts.values() if count >= active_threshold)
+    peak_hour = max(hourly_counts.items(), key=lambda item: item[1])[0] if hourly_counts else None
+
+    top_users = []
+    if user_counts:
+        sorted_user_counts = sorted(user_counts.items(), key=lambda item: item[1], reverse=True)[:5]
+        for user_id, count in sorted_user_counts:
+            user = db.query(User).filter(User.id == user_id).first()
+            if not user:
+                continue
+            top_users.append({
+                "name": user.name,
+                "phone": user.real_phone or user.phone,
+                "count": count
+            })
+
+    recent_payload = []
+    for msg in recent_messages:
+        user = db.query(User).filter(User.id == msg.user_id).first()
+        preview = (
+            msg.content[:140] if msg.content
+            else msg.media_caption[:140] if msg.media_caption
+            else msg.media_filename or msg.message_type
+        )
+        recent_payload.append({
+            "id": msg.id,
+            "created_at": msg.created_at.isoformat() if msg.created_at else None,
+            "user_name": user.name if user else None,
+            "user_phone": (user.real_phone or user.phone) if user else None,
+            "message_type": msg.message_type,
+            "preview": preview,
+            "deleted": msg.deleted,
+            "effective_category": msg.reviewed_category_label or msg.category_label,
+            "effective_intent": msg.reviewed_intent_label or msg.intent_label
+        })
+
+    return {
+        "summary": {
+            "days": days,
+            "period_start": period_start.isoformat(),
+            "total_messages": len(group_messages),
+            "total_users": total_users,
+            "active_users": len(user_counts),
+            "very_active_users": active_users,
+            "deleted_messages": sum(1 for msg in group_messages if msg.deleted),
+            "questions": sum(1 for msg in group_messages if msg.contains_question),
+            "sale_messages": sum(1 for msg in group_messages if (msg.reviewed_category_label or msg.category_label) == "SALE"),
+            "media_messages": sum(1 for msg in group_messages if msg.message_type == "image"),
+            "peak_hour": peak_hour
+        },
+        "hourly": [
+            {"hour": hour, "count": count}
+            for hour, count in sorted(hourly_counts.items())
+        ],
+        "categories": [
+            {"label": label, "count": count}
+            for label, count in sorted(category_counts.items(), key=lambda item: item[1], reverse=True)
+        ],
+        "top_users": top_users,
+        "recent_messages": recent_payload
+    }
 
 
 @app.post("/dashboard/messages/{message_id}/classify")
