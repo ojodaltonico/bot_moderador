@@ -1426,7 +1426,10 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
     if not phone or not response:
         return {"error": "Missing phone or response"}
 
-    if not is_moderator(db, phone):
+    is_mod = is_moderator(db, phone)
+    is_admin = str(phone) == str(ADMIN_PHONE)
+
+    if not is_mod and not is_admin:
         return {"error": "Not a moderator"}
 
     case = (
