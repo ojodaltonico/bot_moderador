@@ -1,6 +1,10 @@
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
-from app.models import User, Moderator, Case, Message, UserAction
+from datetime import datetime
+import json
+
+from app.config import GROUP_ID
+from app.models import User, Moderator, Case, Message, UserAction, CommunityRequest, PendingInstruction, Knowledge
 from app.services.groq_chat import ask_groq
 import re
 
@@ -49,6 +53,9 @@ class ConversationHandler:
         # Comandos de admin
         if is_admin and (message_lower.startswith("agregar mod") or message_lower.startswith("quitar mod")):
             return self._handle_admin_command(normalized_phone, message_lower, reply_jid, real_phone)
+
+        if (is_mod or is_admin) and (message_lower.startswith("resp ") or message_lower.startswith("respuesta ")):
+            return self._handle_community_response(phone, message, reply_jid)
 
         # Comandos de usuario
         if message_lower in ["menu", "/menu"]:
@@ -412,6 +419,95 @@ class ConversationHandler:
                 "send_message": True,
                 "to": self._target(phone, reply_jid),
                 "text": text
+            }
+        }
+
+    def _queue_instruction(self, instruction, source: str = "community_request"):
+        self.db.add(PendingInstruction(
+            source=source,
+            status="pending",
+            payload=json.dumps(instruction)
+        ))
+
+    def _handle_community_response(self, reviewer_phone: str, message: str, reply_jid: str | None):
+        match = re.match(r"^(?:resp|respuesta)\s+(\d+)\s+(.+)$", message.strip(), re.IGNORECASE | re.DOTALL)
+        if not match:
+            return {
+                "instructions": {
+                    "send_message": True,
+                    "to": self._target(reviewer_phone, reply_jid),
+                    "text": "Formato: resp <id> texto de la respuesta"
+                }
+            }
+
+        request_id = int(match.group(1))
+        response_text = match.group(2).strip()
+        if not response_text:
+            return {
+                "instructions": {
+                    "send_message": True,
+                    "to": self._target(reviewer_phone, reply_jid),
+                    "text": "La respuesta no puede estar vacia."
+                }
+            }
+
+        request = self.db.query(CommunityRequest).filter(CommunityRequest.id == request_id).first()
+        if not request:
+            return {
+                "instructions": {
+                    "send_message": True,
+                    "to": self._target(reviewer_phone, reply_jid),
+                    "text": f"No encontre la solicitud comunitaria #{request_id}."
+                }
+            }
+
+        if request.status not in ["pending_review", "pending_answer"]:
+            return {
+                "instructions": {
+                    "send_message": True,
+                    "to": self._target(reviewer_phone, reply_jid),
+                    "text": f"La solicitud #{request_id} ya esta {request.status}."
+                }
+            }
+
+        request.status = "answered"
+        request.final_response = response_text
+        request.reviewed_by = reviewer_phone
+        request.reviewed_at = datetime.now()
+        request.updated_at = datetime.now()
+
+        self._queue_instruction({
+            "send_message": True,
+            "to": GROUP_ID,
+            "text": response_text
+        })
+
+        if request.topic == "farmacia_turno":
+            knowledge = (
+                self.db.query(Knowledge)
+                .filter(Knowledge.key == "farmacia_turno")
+                .first()
+            )
+            if not knowledge:
+                knowledge = Knowledge(
+                    key="farmacia_turno",
+                    tags="farmacia,farmacia_turno,turno",
+                    content=response_text,
+                    enabled=True
+                )
+                self.db.add(knowledge)
+            else:
+                knowledge.content = response_text
+                knowledge.tags = knowledge.tags or "farmacia,farmacia_turno,turno"
+                knowledge.enabled = True
+
+        self.db.commit()
+
+        return {
+            "instructions": {
+                "send_message": True,
+                "to": self._target(reviewer_phone, reply_jid),
+                "text": f"Respuesta registrada y enviada al grupo para la solicitud #{request_id}."
             }
         }
 

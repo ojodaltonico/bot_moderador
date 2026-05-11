@@ -4,3 +4,7 @@ from .case import Case
 from .user_action import UserAction
 from .moderator import Moderator
 from .pending_instruction import PendingInstruction
+from .conversation import ConversationTurn
+from .ai_settings import AISettings
+from .knowledge import Knowledge
+from .community_request import CommunityRequest

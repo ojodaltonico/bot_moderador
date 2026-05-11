@@ -5,13 +5,15 @@ from sqlalchemy import func
 from datetime import datetime, timedelta
 import os
 import json
+import re
+import unicodedata
 from app.config import MEDIA_IMAGES_PATH
 
 os.makedirs(MEDIA_IMAGES_PATH, exist_ok=True)
 
 from app.database import Base, engine, ensure_sqlite_schema
 from app.dependencies import get_db
-from app.models import User, Message, Case, UserAction, Moderator, PendingInstruction
+from app.models import User, Message, Case, UserAction, Moderator, PendingInstruction, CommunityRequest, Knowledge
 from app.config import GROUP_ID, ADMIN_PHONE, MEDIA_IMAGES_PATH
 from app.utils.auth import is_moderator
 from app.utils.message_analysis import analyze_message
@@ -72,6 +74,260 @@ def _queue_instructions(db: Session, instructions, source: str = "dashboard"):
             status="pending",
             payload=json.dumps(instruction)
         ))
+
+
+def _strip_accents(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", text or "")
+    return "".join(char for char in normalized if not unicodedata.combining(char))
+
+
+def _normalize_for_topic(text: str | None) -> str:
+    text = _strip_accents((text or "").lower())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _jid_from_identifier(identifier: str | None, default_suffix: str = "@s.whatsapp.net") -> str | None:
+    if not identifier:
+        return None
+    identifier = str(identifier)
+    if "@" in identifier:
+        return identifier
+    return f"{identifier}{default_suffix}"
+
+
+def _reviewer_targets(db: Session) -> list[str]:
+    targets = []
+    admin_target = _jid_from_identifier(ADMIN_PHONE, "@lid")
+    if admin_target:
+        targets.append(admin_target)
+
+    moderators = db.query(Moderator).filter(Moderator.active == True).all()
+    for moderator in moderators:
+        target = _jid_from_identifier(moderator.lid, "@lid") or _jid_from_identifier(moderator.phone)
+        if target and target not in targets:
+            targets.append(target)
+
+    return targets
+
+
+def _detect_community_topic(message: Message) -> str | None:
+    text = _normalize_for_topic(message.content or message.media_caption)
+    if not text:
+        return None
+
+    pharmacy_terms = [
+        "farmacia de turno", "farmacias de turno", "farmacia turno",
+        "farmacia abierta", "que farmacia esta de turno", "q farmacia esta de turno"
+    ]
+    if "farmacia" in text and ("turno" in text or "abierta" in text):
+        return "farmacia_turno"
+    if any(term in text for term in pharmacy_terms):
+        return "farmacia_turno"
+
+    lost_pet_terms = [
+        "perro perdido", "perra perdida", "se perdio mi perro", "se perdio una perra",
+        "encontre un perro", "encontre una perra", "perrito perdido", "perrita perdida",
+        "mascota perdida", "busco a mi perro"
+    ]
+    if any(term in text for term in lost_pet_terms):
+        return "mascota_perdida"
+
+    return None
+
+
+def _knowledge_for_topic(db: Session, topic: str) -> Knowledge | None:
+    tag_terms = {
+        "farmacia_turno": ["farmacia_turno", "farmacia", "turno"],
+        "mascota_perdida": ["mascota_perdida", "perro", "mascota"],
+    }.get(topic, [topic])
+
+    items = db.query(Knowledge).filter(Knowledge.enabled == True).all()
+    for item in items:
+        haystack = _normalize_for_topic(f"{item.key} {item.tags}")
+        if any(term in haystack for term in tag_terms):
+            return item
+    return None
+
+
+def _default_topic_response(topic: str, knowledge: Knowledge | None) -> str | None:
+    if knowledge:
+        return knowledge.content
+    if topic == "farmacia_turno":
+        return None
+    if topic == "mascota_perdida":
+        return (
+            "Vi el aviso de mascota perdida. Si pueden, compartan zona, foto, "
+            "nombre y un telefono de contacto para que sea mas facil ayudar."
+        )
+    return None
+
+
+def _topic_label(topic: str) -> str:
+    labels = {
+        "farmacia_turno": "farmacia de turno",
+        "mascota_perdida": "mascota perdida",
+    }
+    return labels.get(topic, topic.replace("_", " "))
+
+
+def _create_community_request_if_needed(db: Session, msg: Message) -> CommunityRequest | None:
+    topic = _detect_community_topic(msg)
+    if not topic:
+        return None
+
+    recent_threshold = datetime.now() - timedelta(minutes=45)
+    existing = (
+        db.query(CommunityRequest)
+        .filter(
+            CommunityRequest.topic == topic,
+            CommunityRequest.status.in_(["pending_review", "pending_answer"]),
+            CommunityRequest.created_at >= recent_threshold
+        )
+        .order_by(CommunityRequest.created_at.desc(), CommunityRequest.id.desc())
+        .first()
+    )
+    if existing:
+        return existing
+
+    knowledge = _knowledge_for_topic(db, topic)
+    suggested_response = _default_topic_response(topic, knowledge)
+    status = "pending_review" if suggested_response else "pending_answer"
+    request = CommunityRequest(
+        topic=topic,
+        status=status,
+        question_message_id=msg.id,
+        suggested_response=suggested_response,
+    )
+    db.add(request)
+    db.flush()
+
+    preview = (msg.content or msg.media_caption or "").strip()
+    if len(preview) > 240:
+        preview = preview[:237] + "..."
+
+    label = _topic_label(topic)
+    if suggested_response:
+        review_text = (
+            f"Detecte una pregunta sobre {label} en el grupo.\n\n"
+            f"Mensaje:\n{preview}\n\n"
+            f"Respuesta sugerida:\n{suggested_response}\n\n"
+            f"Responde 1 para publicarla, 2 para ignorar, "
+            f"o escribe: resp {request.id} tu respuesta"
+        )
+    else:
+        review_text = (
+            f"Detecte una pregunta sobre {label} en el grupo.\n\n"
+            f"Mensaje:\n{preview}\n\n"
+            f"No tengo una respuesta guardada. Escribe:\n"
+            f"resp {request.id} texto de la respuesta\n\n"
+            f"Tambien puedes responder 2 para ignorar."
+        )
+
+    targets = _reviewer_targets(db)
+    request.assigned_to = targets[0] if targets else None
+    _queue_instructions(
+        db,
+        [_send_text(target, review_text) for target in targets],
+        source="community_request"
+    )
+    return request
+
+
+def _attach_possible_community_answer(db: Session, msg: Message) -> CommunityRequest | None:
+    if msg.message_type not in {"text", "image"}:
+        return None
+
+    recent_threshold = datetime.now() - timedelta(minutes=45)
+    request = (
+        db.query(CommunityRequest)
+        .filter(
+            CommunityRequest.topic == "farmacia_turno",
+            CommunityRequest.status == "pending_answer",
+            CommunityRequest.answer_message_id.is_(None),
+            CommunityRequest.question_message_id != msg.id,
+            CommunityRequest.created_at >= recent_threshold
+        )
+        .order_by(CommunityRequest.created_at.desc(), CommunityRequest.id.desc())
+        .first()
+    )
+    if not request:
+        return None
+
+    request.answer_message_id = msg.id
+    request.updated_at = datetime.now()
+
+    answer_text = (msg.content or msg.media_caption or "").strip()
+    targets = _reviewer_targets(db)
+    instructions = []
+
+    if msg.message_type == "text" and answer_text:
+        request.status = "pending_review"
+        request.suggested_response = answer_text
+        review_text = (
+            f"Posible respuesta para farmacia de turno #{request.id}:\n\n"
+            f"{answer_text}\n\n"
+            f"Responde 1 para publicarla, 2 para ignorar, "
+            f"o escribe: resp {request.id} tu respuesta corregida"
+        )
+        instructions.extend(_send_text(target, review_text) for target in targets)
+    elif msg.message_type == "image" and msg.media_filename:
+        review_text = (
+            f"Posible respuesta con imagen para farmacia de turno #{request.id}.\n\n"
+            f"Te envio la imagen. Si sirve, escribe:\n"
+            f"resp {request.id} texto confirmado para publicar\n\n"
+            f"O responde 2 para ignorar."
+        )
+        for target in targets:
+            instructions.append(_send_text(target, review_text))
+            instructions.append({
+                "send_image": True,
+                "to": target,
+                "image_path": msg.media_filename,
+                "caption": f"Posible respuesta #{request.id}"
+            })
+
+    if instructions:
+        _queue_instructions(db, instructions, source="community_request")
+    return request
+
+
+def _publish_community_response(
+        db: Session,
+        request: CommunityRequest,
+        response_text: str,
+        reviewer: str
+) -> dict:
+    request.status = "answered"
+    request.final_response = response_text
+    request.reviewed_by = reviewer
+    request.reviewed_at = datetime.now()
+    request.updated_at = datetime.now()
+
+    instruction = _send_text(GROUP_ID, response_text)
+    _queue_instructions(db, instruction, source="community_request")
+    return instruction
+
+
+def _reject_community_request(db: Session, request: CommunityRequest, reviewer: str):
+    request.status = "rejected"
+    request.reviewed_by = reviewer
+    request.reviewed_at = datetime.now()
+    request.updated_at = datetime.now()
+
+
+def _get_pending_community_request(db: Session, reviewer: str | None = None) -> CommunityRequest | None:
+    query = (
+        db.query(CommunityRequest)
+        .filter(CommunityRequest.status.in_(["pending_review", "pending_answer"]))
+    )
+    if reviewer:
+        reviewer_jid = _jid_from_identifier(reviewer, "@lid")
+        query = query.filter(
+            (CommunityRequest.assigned_to == reviewer) |
+            (CommunityRequest.assigned_to == reviewer_jid) |
+            (CommunityRequest.assigned_to.is_(None))
+        )
+    return query.order_by(CommunityRequest.created_at.asc(), CommunityRequest.id.asc()).first()
 
 
 def _log_action(db: Session, user: User, case: Case, action: str, note: str, moderator_phone: str):
@@ -478,6 +734,12 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
         db.add(msg)
         db.commit()
         db.refresh(msg)
+
+        if is_group and chat_id == GROUP_ID:
+            community_request = _create_community_request_if_needed(db, msg)
+            if not community_request:
+                _attach_possible_community_answer(db, msg)
+            db.commit()
 
         if not is_group or chat_id != GROUP_ID:
             return {
@@ -1174,6 +1436,44 @@ def process_moderator_response(payload: dict, db: Session = Depends(get_db)):
     )
 
     if not case:
+        community_request = _get_pending_community_request(db, phone)
+        if community_request:
+            if response == "1" and community_request.suggested_response:
+                _publish_community_response(
+                    db,
+                    community_request,
+                    community_request.suggested_response,
+                    phone
+                )
+                db.commit()
+                return {
+                    "instructions": [_send_text(
+                        phone,
+                        f"Respuesta publicada en el grupo para #{community_request.id}."
+                    )]
+                }
+
+            if response == "2":
+                _reject_community_request(db, community_request, phone)
+                db.commit()
+                return {
+                    "instructions": [_send_text(
+                        phone,
+                        f"Solicitud comunitaria #{community_request.id} ignorada."
+                    )]
+                }
+
+            return {
+                "instructions": [_send_text(
+                    phone,
+                    (
+                        "Hay una solicitud comunitaria pendiente, pero falta una respuesta valida.\n\n"
+                        f"Usa 1 para publicar la sugerida, 2 para ignorar, "
+                        f"o escribe: resp {community_request.id} tu respuesta"
+                    )
+                )]
+            }
+
         return {
             "instructions": [{
                 "send_message": True,
@@ -1388,6 +1688,200 @@ def dashboard_group_report(days: int = 1, limit: int = 40, db: Session = Depends
         "top_users": top_users,
         "recent_messages": recent_payload
     }
+
+
+@app.get("/dashboard/analytics")
+def dashboard_analytics(days: int = 30, db: Session = Depends(get_db)):
+    days = max(1, min(days, 365))
+    period_start = datetime.now() - timedelta(days=days)
+
+    messages = (
+        db.query(Message)
+        .filter(Message.created_at >= period_start)
+        .all()
+    )
+    cases = (
+        db.query(Case)
+        .filter(Case.created_at >= period_start)
+        .all()
+    )
+
+    ignored_resolutions = {"ignore", "ignored", "approve"}
+    penalty_resolutions = {
+        "warn", "strike", "delete", "deleted", "delete_message", "banned"
+    }
+
+    reviewed_messages = [
+        msg for msg in messages
+        if msg.reviewed_category_label or msg.reviewed_intent_label
+    ]
+    reviewed_category_matches = [
+        msg for msg in reviewed_messages
+        if msg.reviewed_category_label and msg.category_label
+        and msg.reviewed_category_label == msg.category_label
+    ]
+    reviewed_intent_matches = [
+        msg for msg in reviewed_messages
+        if msg.reviewed_intent_label and msg.intent_label
+        and msg.reviewed_intent_label == msg.intent_label
+    ]
+
+    def percent(part: int, total: int) -> float | None:
+        if not total:
+            return None
+        return round((part / total) * 100, 1)
+
+    case_type_stats = {}
+    for case in cases:
+        stats = case_type_stats.setdefault(case.type or "unknown", {
+            "total": 0,
+            "pending": 0,
+            "ignored": 0,
+            "penalized": 0,
+            "other_resolved": 0,
+        })
+        stats["total"] += 1
+
+        resolution = case.resolution or ""
+        if case.status in {"pending", "in_review"}:
+            stats["pending"] += 1
+        elif resolution in ignored_resolutions:
+            stats["ignored"] += 1
+        elif resolution in penalty_resolutions:
+            stats["penalized"] += 1
+        else:
+            stats["other_resolved"] += 1
+
+    for stats in case_type_stats.values():
+        decided = stats["ignored"] + stats["penalized"]
+        stats["precision_percent"] = percent(stats["penalized"], decided)
+        stats["false_positive_percent"] = percent(stats["ignored"], decided)
+
+    category_counts = {}
+    for msg in messages:
+        label = msg.reviewed_category_label or msg.category_label or "UNCLASSIFIED"
+        category_counts[label] = category_counts.get(label, 0) + 1
+
+    low_precision_types = [
+        case_type
+        for case_type, stats in case_type_stats.items()
+        if stats["precision_percent"] is not None and stats["precision_percent"] < 50
+    ]
+
+    suggestions = []
+    if not reviewed_messages:
+        suggestions.append(
+            "Revisar manualmente 30-50 mensajes recientes para crear una muestra de verdad y medir la categoria."
+        )
+    if low_precision_types:
+        suggestions.append(
+            "Ajustar reglas de deteccion en: " + ", ".join(sorted(low_precision_types)) + "."
+        )
+    if category_counts.get("QUESTION", 0) or category_counts.get("COMPLAINT", 0):
+        suggestions.append(
+            "Usar preguntas y quejas frecuentes para alimentar la base de conocimiento de la IA."
+        )
+    if not suggestions:
+        suggestions.append("Seguir revisando muestras semanales para controlar desvio de la clasificacion.")
+
+    return {
+        "period": {
+            "days": days,
+            "period_start": period_start.isoformat(),
+        },
+        "summary": {
+            "messages": len(messages),
+            "cases": len(cases),
+            "flagged_messages": sum(1 for msg in messages if msg.flagged),
+            "deleted_messages": sum(1 for msg in messages if msg.deleted),
+            "reviewed_messages": len(reviewed_messages),
+            "category_accuracy_percent": percent(len(reviewed_category_matches), len([
+                msg for msg in reviewed_messages
+                if msg.reviewed_category_label and msg.category_label
+            ])),
+            "intent_accuracy_percent": percent(len(reviewed_intent_matches), len([
+                msg for msg in reviewed_messages
+                if msg.reviewed_intent_label and msg.intent_label
+            ])),
+        },
+        "case_types": case_type_stats,
+        "categories": [
+            {"label": label, "count": count}
+            for label, count in sorted(category_counts.items(), key=lambda item: item[1], reverse=True)
+        ],
+        "suggestions": suggestions,
+    }
+
+
+@app.post("/dashboard/backfill_analysis")
+def dashboard_backfill_analysis(limit: int = 500, db: Session = Depends(get_db)):
+    limit = max(1, min(limit, 5000))
+    messages = (
+        db.query(Message)
+        .filter(Message.category_label.is_(None))
+        .order_by(Message.created_at.asc(), Message.id.asc())
+        .limit(limit)
+        .all()
+    )
+
+    for msg in messages:
+        analysis = analyze_message(
+            message_type=msg.message_type,
+            content=msg.content if msg.message_type == "text" else None,
+            media_caption=msg.media_caption,
+        )
+        msg.category_label = analysis["category_label"]
+        msg.intent_label = analysis["intent_label"]
+        msg.intent_source = analysis["intent_source"] + "_backfill"
+        msg.contains_question = analysis["contains_question"]
+        msg.contains_link = analysis["contains_link"]
+        msg.content_length = analysis["content_length"]
+
+    db.commit()
+
+    remaining = (
+        db.query(func.count(Message.id))
+        .filter(Message.category_label.is_(None))
+        .scalar()
+    ) or 0
+
+    return {
+        "ok": True,
+        "processed": len(messages),
+        "remaining": remaining,
+    }
+
+
+@app.get("/dashboard/community_requests")
+def dashboard_community_requests(limit: int = 50, db: Session = Depends(get_db)):
+    limit = max(10, min(limit, 200))
+    requests = (
+        db.query(CommunityRequest)
+        .order_by(CommunityRequest.created_at.desc(), CommunityRequest.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+    result = []
+    for item in requests:
+        msg = db.query(Message).filter(Message.id == item.question_message_id).first()
+        user = db.query(User).filter(User.id == msg.user_id).first() if msg else None
+        result.append({
+            "id": item.id,
+            "topic": item.topic,
+            "status": item.status,
+            "created_at": item.created_at.isoformat() if item.created_at else None,
+            "reviewed_by": item.reviewed_by,
+            "reviewed_at": item.reviewed_at.isoformat() if item.reviewed_at else None,
+            "assigned_to": item.assigned_to,
+            "suggested_response": item.suggested_response,
+            "final_response": item.final_response,
+            "question": msg.content or msg.media_caption if msg else None,
+            "user_name": user.name if user else None,
+            "user_phone": user.real_phone or user.phone if user else None,
+        })
+
+    return {"community_requests": result}
 
 
 @app.post("/dashboard/messages/{message_id}/classify")

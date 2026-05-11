@@ -13,6 +13,9 @@ whatsapp/session/
 
 # Base de datos backup
 bot_backup.db
+bot.db-journal
+*.db-journal
+.tmp_check/
 
 # Opcional: logs o basura futura
 *.log
