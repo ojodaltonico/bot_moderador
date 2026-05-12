@@ -43,10 +43,53 @@ const SUPPORTED_GROUP_MESSAGE_TYPES = {
   stickerMessage: "sticker"
 };
 
+const GROUP_STATUS_MESSAGE_TYPES = new Set([
+  "statusMentionMessage",
+  "groupStatusMentionMessage",
+  "groupStatusMessage",
+  "groupStatusMessageV2"
+]);
+
 // Directorios para medios
 const IMAGE_DIR = path.resolve("../media/temp/images");
 if (!fs.existsSync(IMAGE_DIR)) {
   fs.mkdirSync(IMAGE_DIR, { recursive: true });
+}
+
+function hasGroupStatusContext(value, depth = 0) {
+  if (!value || typeof value !== "object" || depth > 6) {
+    return false;
+  }
+
+  if (value.isGroupStatus === true) {
+    return true;
+  }
+
+  if (value.statusMentions && Array.isArray(value.statusMentions) && value.statusMentions.includes(GROUP_ID)) {
+    return true;
+  }
+
+  if (
+    value.statusMentionSources &&
+    Array.isArray(value.statusMentionSources) &&
+    value.statusMentionSources.includes(GROUP_ID)
+  ) {
+    return true;
+  }
+
+  return Object.values(value).some(child => hasGroupStatusContext(child, depth + 1));
+}
+
+function isGroupStatusMessage(msg, chatId, messageKeys) {
+  if (chatId !== GROUP_ID) {
+    return false;
+  }
+
+  if (messageKeys.some(key => GROUP_STATUS_MESSAGE_TYPES.has(key))) {
+    return true;
+  }
+
+  return hasGroupStatusContext(msg);
 }
 
 // ================================
@@ -434,9 +477,6 @@ async function start() {
 
       if (!msg.message) return;
 
-      // Ignorar mensajes propios
-      if (msg.key.fromMe) return;
-
       const chatId = msg.key.remoteJid;
       const isGroup = chatId.endsWith("@g.us");
 
@@ -458,6 +498,16 @@ async function start() {
         key === 'conversation' ||
         key === 'extendedTextMessage'
       ) || messageKeys[0];
+
+      if (isGroup && !msg.key.fromMe && isGroupStatusMessage(msg, chatId, messageKeys)) {
+        console.log("🚫 Estado etiquetando al grupo detectado. Borrando mensaje...");
+        console.log("   Key:", JSON.stringify(msg.key, null, 2));
+        await deleteMessageFromGroup(sock, msg.key);
+        return;
+      }
+
+      // Ignorar mensajes propios
+      if (msg.key.fromMe) return;
 
       console.log(`\n🔎 ===== DEBUG MENSAJE =====`);
       console.log(`   messageType: ${messageType}`);
