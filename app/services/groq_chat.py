@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import locale
 import unicodedata
@@ -12,6 +13,7 @@ from app.utils.ai_config import get_ai_config
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 MENU_HINT = "\n\nEscribe menu para volver."
+PHARMACY_SHIFT_CHANGE_HOUR = int(os.getenv("PHARMACY_SHIFT_CHANGE_HOUR", "8"))
 
 # Configurar locale para fechas en español (si está disponible)
 try:
@@ -78,7 +80,11 @@ def _extract_pharmacy_for_today(knowledge_text: str) -> str | None:
     if not knowledge_text:
         return None
 
-    weekday = datetime.now().weekday()
+    now = datetime.now()
+    weekday = now.weekday()
+    if now.hour < PHARMACY_SHIFT_CHANGE_HOUR:
+        weekday = (weekday - 1) % 7
+
     day_names = [
         "lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"
     ]
@@ -110,7 +116,7 @@ def _answer_pharmacy_shift() -> str | None:
     knowledge_text = _get_knowledge_by_key_or_tags(["farmacia_turno", "farmacia", "turno"])
     pharmacy = _extract_pharmacy_for_today(knowledge_text)
     if pharmacy:
-        return f"La farmacia de turno hoy es {pharmacy}."
+        return f"La farmacia de turno ahora es {pharmacy}."
     if knowledge_text:
         return "Tengo estos turnos cargados:\n" + knowledge_text
     return None
