@@ -92,6 +92,23 @@ function isGroupStatusMessage(msg, chatId, messageKeys) {
   return hasGroupStatusContext(msg);
 }
 
+function normalizeTargetChat(target, originalChatId = null) {
+  if (!target) {
+    return target;
+  }
+
+  const targetText = String(target);
+  if (originalChatId && !targetText.includes("@g.us")) {
+    return originalChatId;
+  }
+
+  if (targetText.includes("@")) {
+    return targetText;
+  }
+
+  return `${targetText.replace(/\D/g, "")}@s.whatsapp.net`;
+}
+
 // ================================
 // FUNCIÓN PARA BORRAR MENSAJES
 // ================================
@@ -218,10 +235,7 @@ async function processInstructions(instructions, sock, originalChatId = null) {
 
       // 1. Enviar mensaje
       if (instruction.send_message && instruction.to && instruction.text) {
-        let targetChat = instruction.to;
-        if (originalChatId && !instruction.to.includes('@g.us')) {
-          targetChat = originalChatId;
-        }
+        const targetChat = normalizeTargetChat(instruction.to, originalChatId);
         console.log(`📤 Enviando mensaje a ${targetChat}`);
         await sock.sendMessage(targetChat, { text: instruction.text });
         console.log(`✅ Mensaje enviado a ${targetChat}`);
@@ -229,10 +243,7 @@ async function processInstructions(instructions, sock, originalChatId = null) {
 
       // 2. Enviar imagen
       if (instruction.send_image && instruction.to && instruction.image_path) {
-        let targetChat = instruction.to;
-        if (originalChatId && !instruction.to.includes('@g.us')) {
-          targetChat = originalChatId;
-        }
+        const targetChat = normalizeTargetChat(instruction.to, originalChatId);
         const imagePath = path.join(IMAGE_DIR, instruction.image_path);
         console.log(`📸 Enviando imagen desde: ${imagePath}`);
         if (fs.existsSync(imagePath)) {
@@ -590,6 +601,11 @@ async function start() {
           messageText = msg.message.conversation || "";
         } else if (messageType === "extendedTextMessage") {
           messageText = msg.message.extendedTextMessage?.text || "";
+        }
+
+        if (!messageText.trim()) {
+          console.log(`   ℹ️ Mensaje privado sin texto soportado (${messageType}), ignorando`);
+          return;
         }
 
         let realPhone = sender;
