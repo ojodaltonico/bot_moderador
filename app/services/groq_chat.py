@@ -1,6 +1,7 @@
 import json
 import re
 import locale
+import unicodedata
 from urllib import request, error
 from datetime import datetime
 from app.config import GROQ_API_KEY, GROQ_MODEL
@@ -34,14 +35,85 @@ MESES = {
 def _fecha_en_espanol():
     """Devuelve fecha formateada en español, incluso si locale falla."""
     now = datetime.now()
+    dia_en = now.strftime("%A")
+    mes_en = now.strftime("%B")
+    dia_es = DIAS.get(dia_en, dia_en)
+    mes_es = MESES.get(mes_en, mes_en)
+    return f"{dia_es} {now.day} de {mes_es}"
+
+
+def _strip_accents(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", text or "")
+    return "".join(char for char in normalized if not unicodedata.combining(char))
+
+
+def _normalize_text(text: str) -> str:
+    text = _strip_accents((text or "").lower())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _is_pharmacy_shift_question(user_message: str) -> bool:
+    text = _normalize_text(user_message)
+    return "farmacia" in text and ("turno" in text or "abierta" in text)
+
+
+def _get_knowledge_by_key_or_tags(terms: list[str]) -> str:
+    db = SessionLocal()
     try:
-        return now.strftime("%A %d de %B")
-    except:
-        dia_en = now.strftime("%A")
-        mes_en = now.strftime("%B")
-        dia_es = DIAS.get(dia_en, dia_en)
-        mes_es = MESES.get(mes_en, mes_en)
-        return f"{dia_es} {now.day} de {mes_es}"
+        normalized_terms = [_normalize_text(term) for term in terms]
+        items = db.query(Knowledge).filter(Knowledge.enabled == True).all()
+        for item in items:
+            haystack = _normalize_text(f"{item.key} {item.tags}")
+            if any(term in haystack for term in normalized_terms):
+                return item.content
+        return ""
+    except Exception as e:
+        print(f"Error en _get_knowledge_by_key_or_tags: {e}")
+        return ""
+    finally:
+        db.close()
+
+
+def _extract_pharmacy_for_today(knowledge_text: str) -> str | None:
+    if not knowledge_text:
+        return None
+
+    weekday = datetime.now().weekday()
+    day_names = [
+        "lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"
+    ]
+    today = day_names[weekday]
+
+    normalized = _strip_accents(knowledge_text)
+    lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+    day_pattern = re.compile(
+        r"^(lunes|martes|miercoles|jueves|viernes|sabado|domingo)"
+        r"(?:\s+y\s+(lunes|martes|miercoles|jueves|viernes|sabado|domingo))?"
+        r"\s*:\s*(.+)$",
+        re.IGNORECASE,
+    )
+
+    for line in lines:
+        match = day_pattern.match(line)
+        if not match:
+            continue
+        start_day = match.group(1).lower()
+        end_day = (match.group(2) or "").lower()
+        pharmacy = match.group(3).strip()
+        if today == start_day or today == end_day:
+            return pharmacy
+
+    return None
+
+
+def _answer_pharmacy_shift() -> str | None:
+    knowledge_text = _get_knowledge_by_key_or_tags(["farmacia_turno", "farmacia", "turno"])
+    pharmacy = _extract_pharmacy_for_today(knowledge_text)
+    if pharmacy:
+        return f"La farmacia de turno hoy es {pharmacy}."
+    if knowledge_text:
+        return "Tengo estos turnos cargados:\n" + knowledge_text
+    return None
 
 def _call_groq(messages, temperature=0.7, max_tokens=200):
     payload = {
@@ -138,6 +210,16 @@ def ask_groq(user_phone: str, user_message: str) -> str:
     db = SessionLocal()
 
     try:
+        if _is_pharmacy_shift_question(user_message):
+            pharmacy_answer = _answer_pharmacy_shift()
+            if pharmacy_answer:
+                user_turn = ConversationTurn(user_phone=user_phone, role="user", content=user_message)
+                assistant_turn = ConversationTurn(user_phone=user_phone, role="assistant", content=pharmacy_answer)
+                db.add(user_turn)
+                db.add(assistant_turn)
+                db.commit()
+                return pharmacy_answer + MENU_HINT
+
         # 1. Clasificar intención
         intent = _classify_intent(user_message)
         print(f"[AI] Intent detectado: {intent}")
