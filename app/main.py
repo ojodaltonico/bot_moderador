@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import os
 import json
 import re
+import secrets
 import unicodedata
 from app.config import MEDIA_IMAGES_PATH
 
@@ -13,13 +14,13 @@ os.makedirs(MEDIA_IMAGES_PATH, exist_ok=True)
 
 from app.database import Base, engine, ensure_sqlite_schema
 from app.dependencies import get_db
-from app.models import User, Message, Case, UserAction, Moderator, PendingInstruction, CommunityRequest, Knowledge
-from app.config import GROUP_ID, ADMIN_PHONE, MEDIA_IMAGES_PATH
+from app.models import User, Message, Case, UserAction, Moderator, PendingInstruction, CommunityRequest, Knowledge, ModeratorSession
+from app.config import GROUP_ID, ADMIN_PHONE, MEDIA_IMAGES_PATH, PUBLIC_BASE_URL
 from app.utils.auth import is_moderator
 from app.utils.message_analysis import analyze_message
 from app.utils.image_analysis import analyze_image, ocr_image
 from app.utils.pharmacy import build_pharmacy_response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 app = FastAPI()
 app.add_middleware(
@@ -76,6 +77,120 @@ def _queue_instructions(db: Session, instructions, source: str = "dashboard"):
             status="pending",
             payload=json.dumps(instruction)
         ))
+
+
+def _public_url(path: str) -> str:
+    base = (PUBLIC_BASE_URL or "").rstrip("/")
+    if not path.startswith("/"):
+        path = "/" + path
+    return f"{base}{path}"
+
+
+def _create_moderator_session(db: Session, moderator_phone: str, hours: int = 8) -> ModeratorSession:
+    now = datetime.now()
+    session = ModeratorSession(
+        token=secrets.token_urlsafe(32),
+        moderator_phone=str(moderator_phone),
+        expires_at=now + timedelta(hours=hours),
+        last_seen_at=now
+    )
+    db.add(session)
+    db.flush()
+    return session
+
+
+def _get_moderator_session(db: Session, token: str | None) -> ModeratorSession:
+    if not token:
+        raise HTTPException(status_code=401, detail="token requerido")
+
+    session = db.query(ModeratorSession).filter(ModeratorSession.token == token).first()
+    now = datetime.now()
+    if not session or session.revoked_at or session.expires_at < now:
+        raise HTTPException(status_code=401, detail="link vencido")
+
+    if not is_moderator(db, session.moderator_phone):
+        raise HTTPException(status_code=403, detail="moderador inactivo")
+
+    session.last_seen_at = now
+    return session
+
+
+def _message_preview(msg: Message | None, max_len: int = 220) -> str:
+    if not msg:
+        return ""
+    text = msg.content or msg.media_caption or msg.image_ocr_text or msg.media_filename or msg.message_type or ""
+    if len(text) > max_len:
+        return text[:max_len - 3] + "..."
+    return text
+
+
+def _serialize_message(db: Session, msg: Message | None, token: str | None = None) -> dict | None:
+    if not msg:
+        return None
+    user = db.query(User).filter(User.id == msg.user_id).first()
+    return {
+        "id": msg.id,
+        "created_at": msg.created_at.isoformat() if msg.created_at else None,
+        "user_name": user.name if user else None,
+        "user_phone": (user.real_phone or user.phone) if user else None,
+        "strikes": user.strikes if user else 0,
+        "message_type": msg.message_type,
+        "content": msg.content,
+        "media_caption": msg.media_caption,
+        "preview": _message_preview(msg),
+        "deleted": msg.deleted,
+        "category_label": msg.category_label,
+        "intent_label": msg.intent_label,
+        "reviewed_category_label": msg.reviewed_category_label,
+        "reviewed_intent_label": msg.reviewed_intent_label,
+        "effective_category": msg.reviewed_category_label or msg.category_label,
+        "effective_intent": msg.reviewed_intent_label or msg.intent_label,
+        "image_ocr_text": msg.image_ocr_text,
+        "analysis_context": msg.analysis_context,
+        "analysis_reason": msg.analysis_reason,
+        "analysis_confidence": msg.analysis_confidence,
+        "media_url": (
+            f"/moderator/media/{msg.media_filename}?token={token}"
+            if token and msg.media_filename else None
+        )
+    }
+
+
+def _serialize_case(db: Session, case: Case, token: str | None = None) -> dict:
+    msg, user = _get_case_bundle(db, case)
+    before = (
+        db.query(Message)
+        .filter(Message.chat_id == msg.chat_id, Message.id < msg.id)
+        .order_by(Message.id.desc())
+        .limit(5)
+        .all()
+    )
+    after = (
+        db.query(Message)
+        .filter(Message.chat_id == msg.chat_id, Message.id > msg.id)
+        .order_by(Message.id.asc())
+        .limit(3)
+        .all()
+    )
+    context = list(reversed(before)) + [msg] + after
+    return {
+        "id": case.id,
+        "type": case.type,
+        "status": case.status,
+        "priority": case.priority,
+        "resolution": case.resolution,
+        "assigned_to": case.assigned_to,
+        "note": case.note,
+        "created_at": case.created_at.isoformat() if case.created_at else None,
+        "user": {
+            "name": user.name,
+            "phone": user.real_phone or user.phone,
+            "strikes": user.strikes,
+            "status": user.status,
+        },
+        "message": _serialize_message(db, msg, token),
+        "context": [_serialize_message(db, item, token) for item in context],
+    }
 
 
 def _strip_accents(text: str) -> str:
@@ -1149,6 +1264,275 @@ def get_image(
     return FileResponse(path)
 
 
+@app.get("/moderator", response_class=HTMLResponse)
+def moderator_dashboard(token: str, db: Session = Depends(get_db)):
+    _get_moderator_session(db, token)
+    db.commit()
+    return HTMLResponse("""
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Moderacion</title>
+  <style>
+    :root { color-scheme: light; --bg:#f6f7f9; --panel:#fff; --text:#17202a; --muted:#657080; --line:#dde3ea; --danger:#b42318; --ok:#166534; --accent:#1f6feb; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:system-ui,-apple-system,Segoe UI,sans-serif; background:var(--bg); color:var(--text); }
+    header { position:sticky; top:0; z-index:10; background:var(--panel); border-bottom:1px solid var(--line); padding:12px 14px; }
+    h1 { margin:0; font-size:18px; }
+    .sub { color:var(--muted); font-size:12px; margin-top:2px; }
+    main { max-width:820px; margin:0 auto; padding:12px; }
+    .tabs { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:10px 0 12px; }
+    button, select, textarea { font:inherit; }
+    button { border:1px solid var(--line); background:#fff; border-radius:8px; padding:10px 12px; min-height:42px; font-weight:650; }
+    button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+    button.danger { background:var(--danger); border-color:var(--danger); color:#fff; }
+    button.ok { background:var(--ok); border-color:var(--ok); color:#fff; }
+    button:disabled { opacity:.55; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:12px; }
+    .row { display:flex; gap:8px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+    .badge { border:1px solid var(--line); border-radius:999px; padding:3px 8px; color:var(--muted); font-size:12px; background:#fafbfc; }
+    .meta { color:var(--muted); font-size:12px; line-height:1.35; }
+    .text { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.35; margin:9px 0; }
+    .media { width:100%; max-height:420px; object-fit:contain; background:#eef1f4; border:1px solid var(--line); border-radius:8px; margin:8px 0; }
+    .context { border-top:1px solid var(--line); margin-top:10px; padding-top:8px; }
+    .ctx { padding:7px 0; border-bottom:1px solid #edf0f4; }
+    .ctx.hit { background:#fff8df; margin:0 -6px; padding:7px 6px; border-radius:6px; }
+    .actions { display:grid; grid-template-columns:1fr; gap:8px; margin-top:10px; }
+    @media (min-width:620px) { .actions { grid-template-columns:repeat(3, 1fr); } }
+    textarea { width:100%; min-height:58px; resize:vertical; border:1px solid var(--line); border-radius:8px; padding:9px; margin-top:8px; }
+    .empty { text-align:center; color:var(--muted); padding:28px 10px; }
+    .hidden { display:none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Panel de moderacion</h1>
+    <div class="sub" id="status">Cargando...</div>
+  </header>
+  <main>
+    <div class="tabs">
+      <button class="primary" id="tabCases" onclick="showTab('cases')">Casos</button>
+      <button id="tabHistory" onclick="showTab('history')">Historial</button>
+    </div>
+    <section id="cases"></section>
+    <section id="history" class="hidden"></section>
+  </main>
+  <script>
+    const token = new URLSearchParams(location.search).get('token');
+    let activeTab = 'cases';
+
+    function esc(v) {
+      return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+    function time(v) {
+      if (!v) return '';
+      try { return new Date(v).toLocaleString('es-AR', { dateStyle:'short', timeStyle:'short' }); } catch { return v; }
+    }
+    async function api(path, options = {}) {
+      const sep = path.includes('?') ? '&' : '?';
+      const res = await fetch(path + sep + 'token=' + encodeURIComponent(token), options);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+    function showTab(tab) {
+      activeTab = tab;
+      document.getElementById('cases').classList.toggle('hidden', tab !== 'cases');
+      document.getElementById('history').classList.toggle('hidden', tab !== 'history');
+      document.getElementById('tabCases').classList.toggle('primary', tab === 'cases');
+      document.getElementById('tabHistory').classList.toggle('primary', tab === 'history');
+      refresh();
+    }
+    function messageHtml(m, hitId) {
+      const body = m.content || m.media_caption || m.image_ocr_text || m.preview || '';
+      const media = m.media_url ? `<img class="media" src="${esc(m.media_url)}">` : '';
+      return `<div class="ctx ${m.id === hitId ? 'hit' : ''}">
+        <div class="meta">${esc(time(m.created_at))} · ${esc(m.user_name || '+' + (m.user_phone || ''))} · ${esc(m.effective_category || '-')}</div>
+        <div class="text">${esc(body || '[' + (m.message_type || 'mensaje') + ']')}</div>
+        ${media}
+      </div>`;
+    }
+    function caseHtml(c) {
+      const m = c.message || {};
+      const body = m.content || m.media_caption || m.preview || '';
+      const reason = m.analysis_reason ? `<div class="meta">Analisis: ${esc(m.analysis_reason)} ${m.analysis_confidence ? '(' + m.analysis_confidence + '%)' : ''}</div>` : '';
+      const ocr = m.image_ocr_text ? `<div class="meta">OCR</div><div class="text">${esc(m.image_ocr_text)}</div>` : '';
+      const media = m.media_url ? `<img class="media" src="${esc(m.media_url)}">` : '';
+      const ban = c.user && c.user.strikes >= 2 ? `<button class="danger" onclick="act(${c.id}, 'ban')">Expulsar</button>` : '';
+      return `<article class="card">
+        <div class="row">
+          <strong>Caso #${c.id}</strong>
+          <span class="badge">${esc(c.type)} · prioridad ${esc(c.priority)}</span>
+        </div>
+        <div class="meta">${esc(time(c.created_at))} · ${esc(c.user.name || '+' + c.user.phone)} · strikes ${esc(c.user.strikes)}/3</div>
+        <div class="text">${esc(body || '[sin texto]')}</div>
+        ${media}${reason}${ocr}
+        <textarea id="note_${c.id}" placeholder="Nota opcional"></textarea>
+        <div class="actions">
+          <button class="ok" onclick="act(${c.id}, 'ignore')">Ignorar</button>
+          <button class="danger" onclick="act(${c.id}, 'delete_message')">Borrar sin strike</button>
+          <button class="danger" onclick="act(${c.id}, 'delete')">Borrar + strike</button>
+          ${ban}
+        </div>
+        <div class="context">
+          <div class="meta">Contexto del chat</div>
+          ${(c.context || []).map(x => messageHtml(x, m.id)).join('')}
+        </div>
+      </article>`;
+    }
+    async function refresh() {
+      try {
+        if (activeTab === 'cases') {
+          const data = await api('/moderator/api/cases');
+          document.getElementById('status').textContent = `${data.cases.length} caso(s) pendiente(s)`;
+          document.getElementById('cases').innerHTML = data.cases.length ? data.cases.map(caseHtml).join('') : '<div class="card empty">No hay casos pendientes.</div>';
+        } else {
+          const data = await api('/moderator/api/history?limit=60');
+          document.getElementById('status').textContent = `${data.messages.length} mensajes recientes`;
+          document.getElementById('history').innerHTML = data.messages.map(m => `<article class="card">
+            <div class="meta">${esc(time(m.created_at))} · ${esc(m.user_name || '+' + (m.user_phone || ''))} · ${esc(m.effective_category || '-')}</div>
+            <div class="text">${esc(m.preview || '[sin texto]')}</div>
+            ${m.media_url ? `<img class="media" src="${esc(m.media_url)}">` : ''}
+            ${m.deleted ? '<span class="badge">borrado</span>' : `<button class="danger" onclick="deleteMsg(${m.id})">Eliminar mensaje</button>`}
+          </article>`).join('');
+        }
+      } catch (err) {
+        document.getElementById('status').textContent = 'Link vencido o error de conexion';
+      }
+    }
+    async function act(id, action) {
+      const note = document.getElementById('note_' + id)?.value || '';
+      await api('/moderator/api/cases/' + id + '/act', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ action, note })
+      });
+      refresh();
+    }
+    async function deleteMsg(id) {
+      const note = prompt('Motivo opcional') || '';
+      await api('/moderator/api/messages/' + id + '/delete', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ note })
+      });
+      refresh();
+    }
+    refresh();
+    setInterval(refresh, 30000);
+  </script>
+</body>
+</html>
+""")
+
+
+@app.get("/moderator/api/cases")
+def moderator_api_cases(token: str, db: Session = Depends(get_db)):
+    session = _get_moderator_session(db, token)
+    cases = (
+        db.query(Case)
+        .filter(
+            Case.status.in_(["pending", "in_review"]),
+            (Case.assigned_to.is_(None)) | (Case.assigned_to == session.moderator_phone)
+        )
+        .order_by(Case.status.desc(), Case.priority.asc(), Case.id.asc())
+        .limit(30)
+        .all()
+    )
+    db.commit()
+    return {"cases": [_serialize_case(db, case, token) for case in cases]}
+
+
+@app.post("/moderator/api/cases/{case_id}/act")
+def moderator_api_case_action(case_id: int, payload: dict, token: str, db: Session = Depends(get_db)):
+    session = _get_moderator_session(db, token)
+    action = payload.get("action")
+    note = payload.get("note", "")
+
+    case = db.query(Case).filter(Case.id == case_id).first()
+    if not case or case.status not in {"pending", "in_review"}:
+        raise HTTPException(status_code=404, detail="caso no disponible")
+    if case.assigned_to and case.assigned_to != session.moderator_phone:
+        raise HTTPException(status_code=409, detail="caso asignado a otro moderador")
+
+    case.status = "in_review"
+    case.assigned_to = session.moderator_phone
+    result = _resolve_case(
+        db=db,
+        case=case,
+        action=action,
+        moderator_phone=session.moderator_phone,
+        note=note,
+        notify_moderator_to=None,
+        notify_user=True,
+        allow_reinstate=True
+    )
+    _queue_instructions(db, result["instructions"], source="moderator_dashboard")
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/moderator/api/history")
+def moderator_api_history(token: str, limit: int = 60, db: Session = Depends(get_db)):
+    _get_moderator_session(db, token)
+    limit = max(10, min(limit, 150))
+    messages = (
+        db.query(Message)
+        .filter(Message.is_group == True, Message.chat_id == GROUP_ID)
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(limit)
+        .all()
+    )
+    db.commit()
+    return {"messages": [_serialize_message(db, msg, token) for msg in messages]}
+
+
+@app.post("/moderator/api/messages/{message_id}/delete")
+def moderator_api_delete_message(message_id: int, payload: dict, token: str, db: Session = Depends(get_db)):
+    session = _get_moderator_session(db, token)
+    note = payload.get("note") or "Borrado manual desde panel movil"
+    msg = db.query(Message).filter(Message.id == message_id).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="mensaje no encontrado")
+    user = db.query(User).filter(User.id == msg.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="usuario no encontrado")
+
+    msg.deleted = True
+    case = Case(
+        type="manual_delete",
+        status="resolved",
+        priority=1,
+        message_id=msg.id,
+        assigned_to=session.moderator_phone,
+        resolution="delete_message",
+        resolved_by=session.moderator_phone,
+        resolved_at=datetime.now(),
+        note=note
+    )
+    db.add(case)
+    db.flush()
+    _log_action(db, user, case, "delete_message", note, session.moderator_phone)
+    if msg.whatsapp_message_key:
+        _queue_instructions(db, {
+            "delete_message": True,
+            "message_key": msg.whatsapp_message_key
+        }, source="moderator_dashboard")
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/moderator/media/{filename}")
+def moderator_media(filename: str, token: str, db: Session = Depends(get_db)):
+    _get_moderator_session(db, token)
+    db.commit()
+    path = os.path.join(MEDIA_IMAGES_PATH, filename)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="file not found")
+    return FileResponse(path)
+
+
 @app.post("/moderators/command")
 def moderator_command(payload: dict, db: Session = Depends(get_db)):
     sender = payload.get("phone")
@@ -1382,6 +1766,9 @@ def handle_conversation(payload: dict, db: Session = Depends(get_db)):
                 mod.lid = phone
                 db.commit()
 
+        session = _create_moderator_session(db, phone)
+        moderator_link = _public_url(f"/moderator?token={session.token}")
+
         case = (
             db.query(Case)
             .filter(Case.status == "pending")
@@ -1398,7 +1785,11 @@ def handle_conversation(payload: dict, db: Session = Depends(get_db)):
                 "instructions": {
                     "send_message": True,
                     "to": phone,
-                    "text": "✅ No hay casos pendientes. Buen trabajo."
+                    "text": (
+                        "No hay casos pendientes. Buen trabajo.\n\n"
+                        f"Panel movil: {moderator_link}\n"
+                        "El link vence en 8 horas."
+                    )
                 }
             }
 
@@ -1454,6 +1845,9 @@ def handle_conversation(payload: dict, db: Session = Depends(get_db)):
             if user.status == STATUS_BANNED:
                 text += "3. 🔄 Readmitir al grupo (quita 1 strike)\n"
 
+            text += f"\nPanel movil: {moderator_link}\n"
+            text += "El link vence en 8 horas.\n"
+
             instructions.append({
                 "send_message": True,
                 "to": phone,
@@ -1483,6 +1877,8 @@ def handle_conversation(payload: dict, db: Session = Depends(get_db)):
                 text += "3. 🚫 Expulsar (3er strike)\n"
 
             text += "\nEjemplo: responde '2' para borrar y sumar strike"
+            text += f"\n\nPanel movil: {moderator_link}\n"
+            text += "El link vence en 8 horas."
 
             instructions.append({
                 "send_message": True,
