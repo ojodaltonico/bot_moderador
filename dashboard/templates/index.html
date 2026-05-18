@@ -75,7 +75,7 @@
   .btn-refresh:hover { background: var(--border); color: var(--text); }
 
   /* ── LAYOUT ── */
-  .page { padding: 20px; max-width: 1200px; margin: 0 auto; }
+  .page { padding: 20px; max-width: 1440px; margin: 0 auto; }
 
   /* ── STATS ROW ── */
   .stats-row {
@@ -101,7 +101,7 @@
   /* ── MAIN GRID ── */
   .main-grid {
     display: grid;
-    grid-template-columns: 1fr 380px;
+    grid-template-columns: minmax(0, 1fr) minmax(440px, 520px);
     gap: 16px;
   }
 
@@ -1503,6 +1503,10 @@
   }
 
   async function loadAll() {
+    if (document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) {
+      return;
+    }
+
     await Promise.all([
       loadServices(),
       loadStats(),
@@ -1513,7 +1517,7 @@
   }
 
   loadAll();
-  setInterval(loadAll, 15000);
+  setInterval(loadAll, 60000);
 </script>
 </body>
 </html>

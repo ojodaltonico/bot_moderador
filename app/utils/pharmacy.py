@@ -8,6 +8,23 @@ DAY_NAMES = [
     "lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"
 ]
 
+DAY_ALIASES = {
+    "lun": "lunes",
+    "lunes": "lunes",
+    "mar": "martes",
+    "martes": "martes",
+    "mie": "miercoles",
+    "miercoles": "miercoles",
+    "jue": "jueves",
+    "jueves": "jueves",
+    "vie": "viernes",
+    "viernes": "viernes",
+    "sab": "sabado",
+    "sabado": "sabado",
+    "dom": "domingo",
+    "domingo": "domingo",
+}
+
 MONTHS = {
     "enero": 1,
     "febrero": 2,
@@ -102,21 +119,20 @@ def extract_pharmacy_for_effective_day(knowledge_text: str, now: datetime | None
     today = DAY_NAMES[effective_pharmacy_weekday(now)]
     normalized = _normalize(knowledge_text)
     lines = [line.strip() for line in normalized.splitlines() if line.strip()]
-    day_pattern = re.compile(
-        r"^(lunes|martes|miercoles|jueves|viernes|sabado|domingo)"
-        r"(?:\s+y\s+(lunes|martes|miercoles|jueves|viernes|sabado|domingo))?"
-        r"\s*:\s*(.+)$",
-        re.IGNORECASE,
-    )
 
     for line in lines:
-        match = day_pattern.match(line)
-        if not match:
+        if ":" not in line:
             continue
-        start_day = match.group(1).lower()
-        end_day = (match.group(2) or "").lower()
-        pharmacy = match.group(3).strip()
-        if today == start_day or today == end_day:
+
+        day_text, pharmacy = line.split(":", 1)
+        day_text = re.sub(r"^[^A-Za-z]+", "", day_text).strip().lower()
+        day_tokens = [
+            DAY_ALIASES[token]
+            for token in re.findall(r"[a-z]+", day_text)
+            if token in DAY_ALIASES
+        ]
+        if today in day_tokens:
+            pharmacy = pharmacy.strip()
             return pharmacy
 
     return None

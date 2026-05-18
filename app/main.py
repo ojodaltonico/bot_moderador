@@ -2152,13 +2152,15 @@ def list_knowledge(db: Session = Depends(get_db)):
 
 @app.post("/admin/knowledge")
 def create_knowledge(payload: dict, db: Session = Depends(get_db)):
-    k = Knowledge(
-        key=payload["key"],
-        content=payload["content"],
-        tags=payload.get("tags", ""),
-        enabled=payload.get("enabled", True)
-    )
-    db.add(k)
+    key = payload["key"]
+    k = db.query(Knowledge).filter(Knowledge.key == key).first()
+    if not k:
+        k = Knowledge(key=key)
+        db.add(k)
+
+    k.content = payload["content"]
+    k.tags = payload.get("tags", "")
+    k.enabled = payload.get("enabled", True)
     db.commit()
     db.refresh(k)
     return {"id": k.id}
