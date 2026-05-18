@@ -1,5 +1,4 @@
 import json
-import os
 import re
 import locale
 import unicodedata
@@ -10,10 +9,10 @@ from app.database import SessionLocal
 from app.models.conversation import ConversationTurn
 from app.models.knowledge import Knowledge
 from app.utils.ai_config import get_ai_config
+from app.utils.pharmacy import build_pharmacy_response
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 MENU_HINT = "\n\nEscribe menu para volver."
-PHARMACY_SHIFT_CHANGE_HOUR = int(os.getenv("PHARMACY_SHIFT_CHANGE_HOUR", "8"))
 
 # Configurar locale para fechas en español (si está disponible)
 try:
@@ -76,49 +75,13 @@ def _get_knowledge_by_key_or_tags(terms: list[str]) -> str:
         db.close()
 
 
-def _extract_pharmacy_for_today(knowledge_text: str) -> str | None:
-    if not knowledge_text:
-        return None
-
-    now = datetime.now()
-    weekday = now.weekday()
-    if now.hour < PHARMACY_SHIFT_CHANGE_HOUR:
-        weekday = (weekday - 1) % 7
-
-    day_names = [
-        "lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"
-    ]
-    today = day_names[weekday]
-
-    normalized = _strip_accents(knowledge_text)
-    lines = [line.strip() for line in normalized.splitlines() if line.strip()]
-    day_pattern = re.compile(
-        r"^(lunes|martes|miercoles|jueves|viernes|sabado|domingo)"
-        r"(?:\s+y\s+(lunes|martes|miercoles|jueves|viernes|sabado|domingo))?"
-        r"\s*:\s*(.+)$",
-        re.IGNORECASE,
-    )
-
-    for line in lines:
-        match = day_pattern.match(line)
-        if not match:
-            continue
-        start_day = match.group(1).lower()
-        end_day = (match.group(2) or "").lower()
-        pharmacy = match.group(3).strip()
-        if today == start_day or today == end_day:
-            return pharmacy
-
-    return None
-
-
 def _answer_pharmacy_shift() -> str | None:
     knowledge_text = _get_knowledge_by_key_or_tags(["farmacia_turno", "farmacia", "turno"])
-    pharmacy = _extract_pharmacy_for_today(knowledge_text)
-    if pharmacy:
-        return f"La farmacia de turno ahora es {pharmacy}."
+    response = build_pharmacy_response(knowledge_text)
+    if response:
+        return response
     if knowledge_text:
-        return "Tengo estos turnos cargados:\n" + knowledge_text
+        return "No tengo cargado un turno vigente para esta semana."
     return None
 
 def _call_groq(messages, temperature=0.7, max_tokens=200):

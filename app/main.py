@@ -17,6 +17,8 @@ from app.models import User, Message, Case, UserAction, Moderator, PendingInstru
 from app.config import GROUP_ID, ADMIN_PHONE, MEDIA_IMAGES_PATH
 from app.utils.auth import is_moderator
 from app.utils.message_analysis import analyze_message
+from app.utils.image_analysis import analyze_image, ocr_image
+from app.utils.pharmacy import build_pharmacy_response
 from fastapi.responses import FileResponse
 
 app = FastAPI()
@@ -149,11 +151,18 @@ def _knowledge_for_topic(db: Session, topic: str) -> Knowledge | None:
     return None
 
 
+def _build_pharmacy_response_from_knowledge(db: Session) -> str | None:
+    knowledge = _knowledge_for_topic(db, "farmacia_turno")
+    if not knowledge:
+        return None
+    return build_pharmacy_response(knowledge.content)
+
+
 def _default_topic_response(topic: str, knowledge: Knowledge | None) -> str | None:
-    if knowledge:
-        return knowledge.content
     if topic == "farmacia_turno":
         return None
+    if knowledge:
+        return knowledge.content
     if topic == "mascota_perdida":
         return (
             "Vi el aviso de mascota perdida. Si pueden, compartan zona, foto, "
@@ -174,6 +183,24 @@ def _create_community_request_if_needed(db: Session, msg: Message) -> CommunityR
     topic = _detect_community_topic(msg)
     if not topic:
         return None
+
+    if topic == "farmacia_turno":
+        response_text = _build_pharmacy_response_from_knowledge(db)
+        if response_text:
+            request = CommunityRequest(
+                topic=topic,
+                status="answered",
+                question_message_id=msg.id,
+                suggested_response=response_text,
+                final_response=response_text,
+                reviewed_by="auto",
+                reviewed_at=datetime.now(),
+                updated_at=datetime.now(),
+            )
+            db.add(request)
+            db.flush()
+            _queue_instructions(db, _send_text(GROUP_ID, response_text), source="community_request")
+            return request
 
     recent_threshold = datetime.now() - timedelta(minutes=45)
     existing = (
@@ -328,6 +355,62 @@ def _get_pending_community_request(db: Session, reviewer: str | None = None) -> 
             (CommunityRequest.assigned_to.is_(None))
         )
     return query.order_by(CommunityRequest.created_at.asc(), CommunityRequest.id.asc()).first()
+
+
+def _message_preview(message: Message) -> str:
+    return (
+        message.content
+        or message.media_caption
+        or message.image_ocr_text
+        or message.media_filename
+        or message.message_type
+        or ""
+    )
+
+
+def _recent_group_context(db: Session, msg: Message, limit: int = 12) -> list[dict]:
+    threshold = datetime.now() - timedelta(minutes=45)
+    messages = (
+        db.query(Message)
+        .filter(
+            Message.is_group == True,
+            Message.chat_id == msg.chat_id,
+            Message.id < msg.id,
+            Message.created_at >= threshold
+        )
+        .order_by(Message.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+    context = []
+    for item in reversed(messages):
+        context.append({
+            "id": item.id,
+            "created_at": item.created_at.isoformat() if item.created_at else None,
+            "message_type": item.message_type,
+            "category_label": item.category_label,
+            "text": _message_preview(item)[:240]
+        })
+    return context
+
+
+def _analyze_group_image(db: Session, msg: Message):
+    image_path = os.path.join(MEDIA_IMAGES_PATH, msg.media_filename) if msg.media_filename else ""
+    ocr_text = ocr_image(image_path)
+    context = _recent_group_context(db, msg)
+    image_analysis = analyze_image(msg.media_caption, ocr_text, context)
+
+    msg.image_ocr_text = image_analysis.ocr_text
+    msg.analysis_context = image_analysis.context_text
+    msg.analysis_reason = image_analysis.reason
+    msg.analysis_confidence = image_analysis.confidence
+    msg.category_label = image_analysis.category_label
+    msg.intent_label = image_analysis.intent_label
+    msg.intent_source = "image_heuristic_context_v1"
+    msg.content_length = len((msg.media_caption or "") + (ocr_text or "")) or msg.content_length
+
+    return image_analysis
 
 
 def _log_action(db: Session, user: User, case: Case, action: str, note: str, moderator_phone: str):
@@ -735,10 +818,12 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(msg)
 
+        community_request = None
+        possible_community_answer = None
         if is_group and chat_id == GROUP_ID:
             community_request = _create_community_request_if_needed(db, msg)
             if not community_request:
-                _attach_possible_community_answer(db, msg)
+                possible_community_answer = _attach_possible_community_answer(db, msg)
             db.commit()
 
         if not is_group or chat_id != GROUP_ID:
@@ -764,15 +849,20 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
                 db.commit()
 
         elif message_type == "image":
-            flagged = True
-            msg.flagged = True
+            image_analysis = _analyze_group_image(db, msg)
+            flagged = image_analysis.should_flag and not possible_community_answer
+            msg.flagged = flagged
+            if possible_community_answer and image_analysis.should_flag:
+                msg.analysis_reason = f"{image_analysis.reason}; posible respuesta comunitaria pendiente"
 
-            case = Case(
-                type="image_review",
-                message_id=msg.id,
-                priority=2
-            )
-            db.add(case)
+            if flagged:
+                case = Case(
+                    type="image_review",
+                    message_id=msg.id,
+                    priority=image_analysis.priority,
+                    note=image_analysis.reason
+                )
+                db.add(case)
             db.commit()
 
         return {
@@ -1573,6 +1663,10 @@ def dashboard_cases(db: Session = Depends(get_db)):
             "_effectiveIntentLabel": effective_intent,
             "_containsQuestion": msg.contains_question if msg else False,
             "_containsLink": msg.contains_link if msg else False,
+            "_imageOcrText": msg.image_ocr_text[:300] if msg and msg.image_ocr_text else None,
+            "_analysisReason": msg.analysis_reason if msg else None,
+            "_analysisConfidence": msg.analysis_confidence if msg else None,
+            "_analysisContext": msg.analysis_context[:300] if msg and msg.analysis_context else None,
             "_content": (
                 msg.content[:100] if msg and msg.message_type == "text" and msg.content
                 else (msg.media_caption[:100] if msg and msg.message_type == "image" and msg.media_caption else "Imagen sospechosa") if msg and msg.message_type == "image"
@@ -1663,7 +1757,9 @@ def dashboard_group_report(days: int = 1, limit: int = 40, db: Session = Depends
             "preview": preview,
             "deleted": msg.deleted,
             "effective_category": msg.reviewed_category_label or msg.category_label,
-            "effective_intent": msg.reviewed_intent_label or msg.intent_label
+            "effective_intent": msg.reviewed_intent_label or msg.intent_label,
+            "analysis_reason": msg.analysis_reason,
+            "analysis_confidence": msg.analysis_confidence
         })
 
     return {
@@ -1893,8 +1989,14 @@ def dashboard_classify_message(message_id: int, payload: dict, db: Session = Dep
     intent_label = payload.get("intent_label")
     reviewer = str(payload.get("reviewed_by") or ADMIN_PHONE)
 
-    allowed_categories = {"SALE", "QUESTION", "CHAT", "MEDIA", "LINK", "COMPLAINT", "GREETING", "GENERAL"}
-    allowed_intents = {"OFFER", "INFO_REQUEST", "GENERAL", "MEDIA_SHARE", "SHARE_LINK", "COMPLAINT", "SOCIAL"}
+    allowed_categories = {
+        "SALE", "QUESTION", "CHAT", "MEDIA", "LINK", "COMPLAINT", "GREETING", "GENERAL",
+        "LOST_PET", "FOUND_OBJECT", "COMMUNITY_INFO", "JOB_SEARCH"
+    }
+    allowed_intents = {
+        "OFFER", "INFO_REQUEST", "GENERAL", "MEDIA_SHARE", "SHARE_LINK", "COMPLAINT", "SOCIAL",
+        "HELP_REQUEST", "FOUND_ITEM", "INFO_SHARE", "JOB_SEARCH"
+    }
 
     if category_label not in allowed_categories:
         raise HTTPException(status_code=400, detail="categoria invalida")

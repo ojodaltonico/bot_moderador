@@ -46,5 +46,9 @@ class Message(Base):
     contains_question = Column(Boolean, default=False)
     contains_link = Column(Boolean, default=False)
     content_length = Column(Integer, nullable=True)
+    image_ocr_text = Column(Text, nullable=True)
+    analysis_context = Column(Text, nullable=True)
+    analysis_reason = Column(Text, nullable=True)
+    analysis_confidence = Column(Integer, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())

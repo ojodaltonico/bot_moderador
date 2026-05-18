@@ -30,6 +30,10 @@ def ensure_sqlite_schema():
         "contains_question": "BOOLEAN DEFAULT 0",
         "contains_link": "BOOLEAN DEFAULT 0",
         "content_length": "INTEGER",
+        "image_ocr_text": "TEXT",
+        "analysis_context": "TEXT",
+        "analysis_reason": "TEXT",
+        "analysis_confidence": "INTEGER",
     }
 
     with engine.begin() as conn:

@@ -668,8 +668,8 @@
   let openLogService = null;
   let currentTab = 'detail';
   let groupReport = null;
-  const CATEGORY_OPTIONS = ['SALE','QUESTION','CHAT','MEDIA','LINK','COMPLAINT','GREETING','GENERAL'];
-  const INTENT_OPTIONS = ['OFFER','INFO_REQUEST','GENERAL','MEDIA_SHARE','SHARE_LINK','COMPLAINT','SOCIAL'];
+  const CATEGORY_OPTIONS = ['SALE','QUESTION','CHAT','MEDIA','LOST_PET','FOUND_OBJECT','COMMUNITY_INFO','JOB_SEARCH','LINK','COMPLAINT','GREETING','GENERAL'];
+  const INTENT_OPTIONS = ['OFFER','INFO_REQUEST','GENERAL','MEDIA_SHARE','HELP_REQUEST','FOUND_ITEM','INFO_SHARE','JOB_SEARCH','SHARE_LINK','COMPLAINT','SOCIAL'];
 
   // ── TOAST ──────────────────────────────────────────
   function toast(msg, type = '') {
@@ -1340,6 +1340,8 @@
         <div class="d-row"><span class="d-key">efectiva</span><span class="d-val">${c._effectiveCategoryLabel || '—'} / ${c._effectiveIntentLabel || '—'}</span></div>
         <div class="d-row"><span class="d-key">predicción</span><span class="d-val">${c._categoryLabel || '—'} / ${c._intentLabel || '—'}</span></div>
         <div class="d-row"><span class="d-key">origen</span><span class="d-val">${c._intentSource || '—'}</span></div>
+        ${c._analysisReason ? `<div class="d-row"><span class="d-key">motivo</span><span class="d-val">${c._analysisReason}</span></div>` : ''}
+        ${c._analysisConfidence ? `<div class="d-row"><span class="d-key">confianza</span><span class="d-val">${c._analysisConfidence}%</span></div>` : ''}
         ${c._reviewedCategoryLabel || c._reviewedIntentLabel ? `<div class="d-row"><span class="d-key">revisión</span><span class="d-val">${c._reviewedCategoryLabel || '—'} / ${c._reviewedIntentLabel || '—'}</span></div>` : ''}
         ${c._reviewedBy ? `<div class="d-row"><span class="d-key">revisado por</span><span class="d-val">${c._reviewedBy}</span></div>` : ''}
         ${c._reviewedAt ? `<div class="d-row"><span class="d-key">revisado</span><span class="d-val">${ago(c._reviewedAt)}</span></div>` : ''}
@@ -1356,6 +1358,8 @@
           <button class="btn-action" style="margin-top:8px;" onclick="saveClassification(${c._messageId})">guardar clasificación</button>
         ` : ''}
       </div>
+      ${c._imageOcrText ? `<div class="d-section"><div class="d-label">texto detectado en imagen</div><div class="msg-bubble">${c._imageOcrText}</div></div>` : ''}
+      ${c._analysisContext ? `<div class="d-section"><div class="d-label">contexto usado</div><div class="msg-bubble">${c._analysisContext}</div></div>` : ''}
       <div class="d-section">${contentBlock}</div>
     `;
 
