@@ -302,6 +302,31 @@ def _create_community_request_if_needed(db: Session, msg: Message) -> CommunityR
     if topic == "farmacia_turno":
         response_text = _build_pharmacy_response_from_knowledge(db)
         if response_text:
+            # Evitar autoreplies repetidos: si el mensaje ya contiene
+            # la respuesta sugerida (o viceversa), no publicar de nuevo.
+            incoming_text = _normalize_for_topic(msg.content or msg.media_caption)
+            response_norm = _normalize_for_topic(response_text)
+            if not incoming_text:
+                # si no hay texto entrante, no respondemos automáticamente
+                return None
+
+            if response_norm in incoming_text or incoming_text in response_norm:
+                return None
+
+            # Evitar duplicados en corto plazo (p.ej. 10 minutos)
+            recent_similar = (
+                db.query(CommunityRequest)
+                .filter(
+                    CommunityRequest.topic == topic,
+                    CommunityRequest.final_response == response_text,
+                    CommunityRequest.created_at >= datetime.now() - timedelta(minutes=10)
+                )
+                .order_by(CommunityRequest.created_at.desc())
+                .first()
+            )
+            if recent_similar:
+                return recent_similar
+
             request = CommunityRequest(
                 topic=topic,
                 status="answered",
