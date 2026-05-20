@@ -1758,7 +1758,7 @@ def create_simple_appeal(
 
 
 @app.post("/conversation")
-def handle_conversation(payload: dict, db: Session = Depends(get_db)):
+def handle_conversation(payload: dict, request: Request, db: Session = Depends(get_db)):
     phone = payload.get("phone")
     real_phone = payload.get("real_phone")
     message = payload.get("message", "").strip()
@@ -1791,14 +1791,14 @@ def handle_conversation(payload: dict, db: Session = Depends(get_db)):
                 mod.lid = phone
                 db.commit()
 
-            session = _create_moderator_session(db, phone)
-            # Construir enlace absoluto: usar PUBLIC_BASE_URL si está seteado,
-            # si no, usar la base de la petición entrante como fallback.
-            if PUBLIC_BASE_URL:
-                moderator_link = _public_url(f"/moderator?token={session.token}")
-            else:
-                base = str(request.base_url).rstrip("/")
-                moderator_link = f"{base}/moderator?token={session.token}"
+        session = _create_moderator_session(db, phone)
+        # Construir enlace absoluto: usar PUBLIC_BASE_URL si está seteado,
+        # si no, usar la base de la petición entrante como fallback.
+        if PUBLIC_BASE_URL:
+            moderator_link = _public_url(f"/moderator?token={session.token}")
+        else:
+            base = str(request.base_url).rstrip("/")
+            moderator_link = f"{base}/moderator?token={session.token}"
 
         case = (
             db.query(Case)
