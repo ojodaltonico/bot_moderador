@@ -86,6 +86,24 @@ def _public_url(path: str) -> str:
     return f"{base}{path}"
 
 
+def _build_public_url(request: Request, path: str) -> str:
+    if PUBLIC_BASE_URL:
+        return _public_url(path)
+
+    if not path.startswith("/"):
+        path = "/" + path
+
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+    forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+
+    if forwarded_host:
+        scheme = forwarded_proto or request.url.scheme
+        return f"{scheme}://{forwarded_host}{path}"
+
+    base = str(request.base_url).rstrip("/")
+    return f"{base}{path}"
+
+
 def _create_moderator_session(db: Session, moderator_phone: str, hours: int = 8) -> ModeratorSession:
     now = datetime.now()
     session = ModeratorSession(
@@ -1792,13 +1810,8 @@ def handle_conversation(payload: dict, request: Request, db: Session = Depends(g
                 db.commit()
 
         session = _create_moderator_session(db, phone)
-        # Construir enlace absoluto: usar PUBLIC_BASE_URL si está seteado,
-        # si no, usar la base de la petición entrante como fallback.
-        if PUBLIC_BASE_URL:
-            moderator_link = _public_url(f"/moderator?token={session.token}")
-        else:
-            base = str(request.base_url).rstrip("/")
-            moderator_link = f"{base}/moderator?token={session.token}"
+        moderator_link = _build_public_url(request, f"/moderator?token={session.token}")
+        db.commit()
 
         case = (
             db.query(Case)
