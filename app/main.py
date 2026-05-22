@@ -81,6 +81,18 @@ def _queue_instructions(db: Session, instructions, source: str = "dashboard"):
 
 def _public_url(path: str) -> str:
     base = (PUBLIC_BASE_URL or "").rstrip("/")
+    if not base:
+        # Si PUBLIC_BASE_URL no está seteado, intentar obtener la URL pública desde ngrok local
+        try:
+            import urllib.request, json
+            with urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=1) as resp:
+                data = json.load(resp)
+                for t in data.get("tunnels", []):
+                    if t.get("proto") == "https":
+                        base = (t.get("public_url") or "").rstrip("/")
+                        break
+        except Exception:
+            base = ""
     if not path.startswith("/"):
         path = "/" + path
     return f"{base}{path}"
