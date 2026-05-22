@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -83,24 +83,6 @@ def _public_url(path: str) -> str:
     base = (PUBLIC_BASE_URL or "").rstrip("/")
     if not path.startswith("/"):
         path = "/" + path
-    return f"{base}{path}"
-
-
-def _build_public_url(request: Request, path: str) -> str:
-    if PUBLIC_BASE_URL:
-        return _public_url(path)
-
-    if not path.startswith("/"):
-        path = "/" + path
-
-    forwarded_proto = request.headers.get("x-forwarded-proto")
-    forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get("host")
-
-    if forwarded_host:
-        scheme = forwarded_proto or request.url.scheme
-        return f"{scheme}://{forwarded_host}{path}"
-
-    base = str(request.base_url).rstrip("/")
     return f"{base}{path}"
 
 
@@ -1776,7 +1758,7 @@ def create_simple_appeal(
 
 
 @app.post("/conversation")
-def handle_conversation(payload: dict, request: Request, db: Session = Depends(get_db)):
+def handle_conversation(payload: dict, db: Session = Depends(get_db)):
     phone = payload.get("phone")
     real_phone = payload.get("real_phone")
     message = payload.get("message", "").strip()
@@ -1810,8 +1792,7 @@ def handle_conversation(payload: dict, request: Request, db: Session = Depends(g
                 db.commit()
 
         session = _create_moderator_session(db, phone)
-        moderator_link = _build_public_url(request, f"/moderator?token={session.token}")
-        db.commit()
+        moderator_link = _public_url(f"/moderator?token={session.token}")
 
         case = (
             db.query(Case)

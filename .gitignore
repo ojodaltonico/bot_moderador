@@ -11,9 +11,6 @@ media/temp/
 # Sesión de WhatsApp (MUY importante no subir esto)
 whatsapp/session/
 
-# Base de datos local
-bot.db
-
 # Base de datos backup
 bot_backup.db
 bot.db-journal
