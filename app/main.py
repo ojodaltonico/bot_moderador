@@ -919,6 +919,17 @@ def ingest_message(payload: dict, db: Session = Depends(get_db)):
         if not phone or not message_type:
             return {"error": "invalid payload"}
 
+        # Evitar duplicados: si el mensaje ya existe con la misma whatsapp_message_key, retornar
+        if whatsapp_message_key:
+            existing_msg = db.query(Message).filter(Message.whatsapp_message_key == whatsapp_message_key).first()
+            if existing_msg:
+                return {
+                    "stored": False,
+                    "duplicate": True,
+                    "message_id": existing_msg.id,
+                    "flagged": existing_msg.flagged
+                }
+
         user = db.query(User).filter(User.phone == phone).first()
         if not user:
             user = User(phone=phone, real_phone=real_phone, name=name)
