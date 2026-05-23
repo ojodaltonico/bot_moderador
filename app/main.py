@@ -1829,6 +1829,7 @@ def handle_conversation(payload: dict, db: Session = Depends(get_db)):
         )
 
         if not case:
+            db.commit()
             return {
                 "instructions": {
                     "send_message": True,
