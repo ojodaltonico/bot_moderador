@@ -13,6 +13,7 @@ whatsapp/session/
 
 # Base de datos backup
 bot_backup.db
+bot.db
 bot.db-journal
 *.db-journal
 .tmp_check/
