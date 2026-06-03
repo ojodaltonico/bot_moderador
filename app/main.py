@@ -325,19 +325,22 @@ def _create_community_request_if_needed(db: Session, msg: Message) -> CommunityR
             if response_norm in incoming_text or incoming_text in response_norm:
                 return None
 
-            # Evitar duplicados en corto plazo (p.ej. 10 minutos)
+            # Evitar duplicados por más tiempo (farmacia de turno generalmente cambia cada 24h)
+            # Buscar cualquier CommunityRequest sobre farmacia respondido recientemente
             recent_similar = (
                 db.query(CommunityRequest)
                 .filter(
                     CommunityRequest.topic == topic,
+                    CommunityRequest.status == "answered",
                     CommunityRequest.final_response == response_text,
-                    CommunityRequest.created_at >= datetime.now() - timedelta(minutes=10)
+                    CommunityRequest.created_at >= datetime.now() - timedelta(hours=4)
                 )
                 .order_by(CommunityRequest.created_at.desc())
                 .first()
             )
             if recent_similar:
-                return recent_similar
+                # Ya se respondió hace poco, no responder de nuevo
+                return None
 
             request = CommunityRequest(
                 topic=topic,

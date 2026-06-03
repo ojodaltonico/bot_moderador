@@ -11,11 +11,10 @@ media/temp/
 # Sesión de WhatsApp (MUY importante no subir esto)
 whatsapp/session/
 
-# Base de datos backup
-bot_backup.db
-bot.db
-bot.db-journal
+# Base de datos - NUNCA subir a git
+*.db
 *.db-journal
+bot_backup.db
 .tmp_check/
 
 # Opcional: logs o basura futura
